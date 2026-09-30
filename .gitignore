@@ -1,0 +1,14 @@
+# Secrets and credentials
+.env
+.spotify_token_cache
+
+# Exported data
+output/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Enrichment cache, enriched library and saved setlists
+data/

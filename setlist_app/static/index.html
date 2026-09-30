@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Setlist Builder</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='1' y='7' width='3' height='8' rx='1' fill='%236d4aff'/%3E%3Crect x='6' y='3' width='3' height='12' rx='1' fill='%236d4aff'/%3E%3Crect x='11' y='5' width='3' height='10' rx='1' fill='%236d4aff'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Setlist Builder</h1>
+    <div id="library-stats" class="stats"></div>
+  </header>
+
+  <div id="warnings" class="warnings" hidden></div>
+
+  <div id="missing-library" class="missing" hidden>
+    <h2>No enriched library yet</h2>
+    <p id="missing-message"></p>
+    <pre>python enrich_library.py</pre>
+    <p>Then reload this page.</p>
+  </div>
+
+  <main id="main" class="layout" hidden>
+    <!-- Library -->
+    <section class="panel library" aria-label="Library">
+      <div class="filters">
+        <input id="f-search" type="search" placeholder="Search track or artist…" aria-label="Search track or artist">
+        <label class="bpm-range">BPM
+          <input id="f-bpm-min" type="number" min="0" max="400" step="1" placeholder="min" aria-label="Minimum BPM">
+          –
+          <input id="f-bpm-max" type="number" min="0" max="400" step="1" placeholder="max" aria-label="Maximum BPM">
+        </label>
+        <label class="check" title="Also match tracks listed at half or double tempo, e.g. 70 BPM half-time for a 140 range">
+          <input id="f-halftime" type="checkbox"> ½× / 2×
+        </label>
+        <select id="f-key" aria-label="Key"></select>
+        <label class="check" title="Include keys that mix harmonically with the selected key (Camelot ±1, relative major/minor)">
+          <input id="f-compatible" type="checkbox"> + compatible
+        </label>
+        <select id="f-data" aria-label="Data availability">
+          <option value="all">All tracks</option>
+          <option value="has">Has BPM/key</option>
+          <option value="missing">Missing BPM/key</option>
+        </select>
+        <button id="f-reset" class="ghost" type="button">Reset</button>
+      </div>
+      <div class="table-actions">
+        <span id="result-count"></span>
+        <button id="add-selected" type="button" disabled>Add selected to set</button>
+        <button id="clear-selected" class="ghost" type="button" disabled>Clear selection</button>
+      </div>
+      <div class="table-wrap">
+        <table id="library-table">
+          <colgroup id="library-cols"></colgroup>
+          <thead><tr id="library-head"></tr></thead>
+          <tbody id="library-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Setlist -->
+    <section class="panel setlist" aria-label="Setlist">
+      <div class="set-toolbar">
+        <select id="saved-setlists" aria-label="Saved setlists"></select>
+        <button id="set-new" class="ghost" type="button">New</button>
+        <button id="set-delete" class="ghost danger" type="button">Delete</button>
+      </div>
+      <div class="set-name-row">
+        <input id="set-name" type="text" placeholder="Setlist name" aria-label="Setlist name" maxlength="120">
+        <button id="set-save" type="button">Save</button>
+      </div>
+      <div class="set-toolbar">
+        <span id="set-status" class="set-status"></span>
+        <span class="spacer"></span>
+        <button id="export-csv" class="ghost" type="button">Export CSV</button>
+        <button id="export-m3u" class="ghost" type="button">Export M3U</button>
+      </div>
+
+      <div id="set-summary" class="set-summary"></div>
+
+      <div class="arc">
+        <div class="arc-head">
+          <span>Energy arc</span>
+          <div class="seg" role="radiogroup" aria-label="Arc metric">
+            <button type="button" data-metric="danceability" class="active">Danceability</button>
+            <button type="button" data-metric="bpm">BPM</button>
+          </div>
+        </div>
+        <svg id="arc-svg" preserveAspectRatio="none" role="img" aria-label="Energy arc"></svg>
+      </div>
+
+      <ol id="set-list" class="set-list"></ol>
+      <p id="set-empty" class="set-empty">Add tracks from the library with <b>+</b>, or tick several and use “Add selected to set”. Drag or use ↑ ↓ to reorder.</p>
+    </section>
+  </main>
+
+  <footer class="footer">
+    BPM, key, danceability and acousticness data provided by
+    <a href="https://getsongbpm.com" target="_blank" rel="noopener">GetSongBPM</a>.
+    Track data from Spotify.
+  </footer>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
