@@ -3,8 +3,8 @@
 A personal, local-only toolkit with three steps:
 
 1. **Export** your Spotify Liked Songs: `export_liked_songs.py` (this section)
-2. **Enrich** them with BPM, key, danceability and acousticness: `enrich_library.py` ([below](#phase-2-enrich-with-bpm--key))
-3. **Build setlists** in a local browser app: `python -m setlist_app` ([below](#phase-2-the-setlist-builder-app))
+2. **Enrich** them with BPM, key, danceability and acousticness (GetSongBPM) and mood/genre tags (Last.fm): `enrich_library.py` ([BPM](#phase-2-enrich-with-bpm--key), [tags](#phase-3-mood--genre-tags))
+3. **Build setlists** in a local browser app: `python -m setlist_app` ([below](#phase-2-the-setlist-builder-app)). You can also generate drafts from a mood and get next-track suggestions ([phase 3](#phase-3-generate-from-a-mood--suggest-next-track)).
 
 Everything runs on your machine. There's no hosting and no accounts beyond the API keys.
 
@@ -148,16 +148,18 @@ Spotify's audio-features endpoints only work for apps with extended quota, not D
 
 ```powershell
 python enrich_library.py --limit 25   # optional: try 25 tracks first and check the matches in the app
-python enrich_library.py              # everything that isn't cached yet
+python enrich_library.py              # everything that isn't cached yet (BPM and, if configured, tags)
+python enrich_library.py --only bpm   # just this step
 ```
 
 Progress looks like `Enriched 400 / 1386 unique tracks... (this run: ...)`. The free API allows 3,000 requests/hour. The script keeps to 2,800/hour, including requests from earlier runs in the past hour. It pauses on its own if it reaches that limit. Each track takes 1–3 requests. A first run over ~1,400 tracks usually takes 20–40 minutes, but it may hit the hourly limit and pause. Ctrl+C is safe: progress is saved every 10 lookups and on exit.
 
 | Flag | Effect |
 | --- | --- |
-| `--limit N` | Look up at most N uncached tracks this run |
-| `--retry-unmatched` | Try tracks that had no match last time again (GetSongBPM's catalogue grows) |
-| `--no-fetch` | Don't call the API. Just rebuild `library_enriched.json` from the cache. Works without a key, so you can use the app before you have one. |
+| `--only bpm` / `--only tags` | Run one step. By default both run. A step whose key isn't in `.env` is skipped with a note, and `--only` without the key is an error. |
+| `--limit N` | Look up at most N uncached tracks per step this run |
+| `--retry-unmatched` | Try tracks that had no match last time again (both sources' catalogues grow) |
+| `--no-fetch` | Don't call any API. Just rebuild `library_enriched.json` from the caches. Works without keys, so you can use the app before you have them. |
 | `--input PATH` | Read a different Liked Songs export |
 
 **After you like more songs:** run `export_liked_songs.py`, then `enrich_library.py`. Cached tracks are never fetched again, so only new ones cost requests.
@@ -222,14 +224,103 @@ If `data/library_enriched.json` doesn't exist yet, the page tells you to run the
 
 | Path | What | Written by |
 | --- | --- | --- |
-| `.env` | Spotify + GetSongBPM credentials | you |
+| `.env` | Spotify, GetSongBPM and Last.fm credentials | you |
 | `.spotify_token_cache` | Cached Spotify login | `export_liked_songs.py` |
 | `output/liked_songs.json`, `.csv` | Raw Liked Songs export | `export_liked_songs.py` |
 | `data/bpm_cache.json` | Every successful lookup, keyed by ISRC, plus recent request times for the hourly limit | `enrich_library.py` |
 | `data/unmatched.json` | ISRCs with no match, with track name/artists for reference | `enrich_library.py` |
-| `data/library_enriched.json` | Slim library + enrichment; what the app reads | `enrich_library.py` |
-| `data/setlists.json` | Your saved setlists | the app |
+| `data/lastfm_tag_cache.json` | Raw Last.fm tags per artist+title and per artist, including "not found" results | `enrich_library.py` |
+| `data/library_enriched.json` | Slim library + BPM/key + cleaned tags; what the app reads | `enrich_library.py` |
+| `data/setlists.json` | Your saved setlists, with any mood tags | the app |
 
-All of these are git-ignored. Back up `data/setlists.json` if your sets matter to you. Deleting `data/bpm_cache.json` means every track is looked up again.
+All of these are git-ignored. Back up `data/setlists.json` if your sets matter to you. Deleting `data/bpm_cache.json` or `data/lastfm_tag_cache.json` means every track is looked up again by that step.
 
-Out of scope for now: automatic next-track suggestions, genre tagging, Rekordbox/Serato integration beyond CSV/M3U, and Spotify playback control.
+Out of scope for now: variety rules (e.g. avoiding repeated artists), ML/embedding similarity, Rekordbox/Serato integration beyond CSV/M3U, and Spotify playback control.
+
+---
+
+# Phase 3: Mood & genre tags
+
+Mood features need descriptive tags, which the BPM data can't provide. `enrich_library.py` has a second, independent step that fetches them from **Last.fm** (`tag_enrichment.py`). It uses `track.getTopTags`, falling back to `artist.getTopTags` when a track has fewer than 3 usable tags, which is common for new or niche releases. It's the same script as the BPM step, so you run one script with a flag, not a second script.
+
+## Get a Last.fm API key
+
+1. Log in to Last.fm (a free account is needed to get a key) and go to [last.fm/api/account/create](https://www.last.fm/api/account/create).
+2. Fill in an application name and description, e.g. "Personal DJ setlist builder, non-commercial". Leave the callback URL empty. These read-only endpoints need no user login.
+3. Copy the **API key** (you don't need the shared secret) into `.env`:
+
+   ```ini
+   LASTFM_API_KEY=<your key>
+   ```
+
+Last.fm's terms allow non-commercial use and require crediting Last.fm where the data is shown. The app footer does this.
+
+## Run the tag step
+
+```powershell
+python enrich_library.py --only tags --limit 25   # optional quick test
+python enrich_library.py --only tags              # everything not cached yet
+```
+
+It makes one request per unique artist+title (about 1,400 for this library), plus artist lookups where needed. It's paced at about 4 requests/second and backs off and retries if Last.fm returns its rate-limit error (29) or a temporary outage. A full run takes roughly 10–15 minutes and can be interrupted and resumed. The cache is about 1 MB, far under Last.fm's 100 MB limit. Re-runs only fetch newly liked songs.
+
+## How tags are cleaned
+
+Raw Last.fm tags are crowdsourced and noisy. They're cached as-is, and cleaned whenever `library_enriched.json` is rebuilt (`setlist_app/tags.py`), so the rules can be adjusted and applied with `--no-fetch` without refetching:
+
+- Everything is lowercased. Spelling variants merge: `Future Bass` / `future-bass` / `futurebass` → `future bass`, and `dnb` / `Drum & Bass` / `drum n bass` → `drum and bass`.
+- Non-descriptive tags are dropped: opinions ("awesome", "favorite", "10/10"), listening habits ("seen live", "my playlist"), bare years, and a tag that's just the artist's name, track title or album name.
+- Each remaining tag keeps Last.fm's 0–100 weight. Artist-level fallback tags count at half weight, and tags under 5 are ignored as one-off noise.
+
+Each track in `library_enriched.json` gets `tags: [{tag, weight, source}]` (strongest first, up to 12) and a `tag_status`: `tagged`, `no_tags` (nothing usable), or `pending` (not fetched yet). Tracks with no tags simply never appear in mood-filtered results.
+
+There's **no fixed list of genres or moods** anywhere. The vocabulary is whatever tags exist in your library, with how many tracks carry each.
+
+**Why not Spotify's artist genres?** The plan was to also use `GET /artists/{id}` genres. On 2026-09-30 Spotify returned **no `genres` field at all** for this app, with both a user token and an app token, even for artists like Skrillex. That's true even though the February 2026 changelog doesn't list genres as removed. So that source isn't used. Last.fm's artist tags cover the same need. If Spotify restores the field, it could be added as another source in `tag_enrichment.py`.
+
+---
+
+# Phase 3: Generate from a mood & suggest next track
+
+Both features use one transition score (`setlist_app/static/scoring.js`), a weighted average of simple, visible parts. There's no machine learning, so every suggestion can be explained:
+
+| Part | Weight | 0 = ideal … 1 = bad |
+| --- | --- | --- |
+| BPM | 0.35 | tempo change in %, compared at 1×, 2× and ½× for half-time; 8%+ scores as a hard jump |
+| Key | 0.30 | Camelot: same key 0, ±1 0.1, relative 0.15, clash 1 |
+| Energy | 0.20 | how far the track's danceability is from the arc's target (generation) or from the previous track (suggestions); 40+ points apart = 1 |
+| Mood | 0.15 | 1 − how strongly the track carries the selected tags (only when a mood is active) |
+
+Energy is GetSongBPM's danceability, because neither source provides a true energy value. **Missing data scores as uncertain (0.5–0.6), not as good or bad.** Only ~19% of this library has BPM/key from GetSongBPM, so drafts and suggestions lean on the tracks that do. Tracks without data can still appear, but their transitions are guesses, and the app says so.
+
+## Generate a draft setlist
+
+Click **Generate…** in the setlist panel:
+
+1. **Mood / vibe tags:** search and pick one or more. Each shows how many tracks carry it. Tracks don't need all the tags: matching more of them, more strongly, ranks higher. The preview shows how many tracks match and how many have BPM/key data.
+2. **Length:** a number of tracks, or minutes.
+3. **Energy arc:**
+   - **Build:** low to high.
+   - **Peak then cool:** rises to a peak about 2/3 of the way through, then eases to the middle.
+   - **Plateau:** steady.
+   - **Free:** no arc; transitions only.
+
+   Low and high are taken from the matching tracks' own energy range.
+4. **Generate draft:** picks an opening track that fits the mood and the arc's starting energy, then repeatedly adds the remaining track with the lowest transition cost until the length is reached.
+
+The draft opens in the normal builder as an **unsaved** setlist, so you can reorder, remove, add, rename and save it like any other. The arc it aimed for is drawn as a dashed line over the danceability bars. If fewer tracks match than you asked for, the draft stops there and **tells you**; it's never padded with tracks outside the mood.
+
+**Use as mood filter only** sets the mood for suggestions without generating anything.
+
+## Suggest next track
+
+With at least one track in the set, click **Suggest next track** under the list. You get the 12 best-scoring tracks to follow the **last** track. Each one shows:
+- the BPM change
+- the key relationship (same key / ±1 / relative / clash)
+- the energy change
+- the matching mood tags
+- a 0–100 fit score
+
+Click **+** to append one; the list then refreshes for the new last track.
+
+If a mood is active (from a generated draft, or **Set mood…**), suggestions only come from tracks with at least one of those tags, weighted by how strongly they match. Remove the mood chips to search the whole library. A setlist's mood is saved with it.

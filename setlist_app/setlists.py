@@ -94,7 +94,8 @@ def get_setlist(setlist_id: str, path: Path = SETLISTS_PATH) -> dict:
 
 
 def save_setlist(name: str, track_ids: list[str], tracks_by_id: dict[str, dict],
-                 setlist_id: str | None = None, path: Path = SETLISTS_PATH) -> dict:
+                 setlist_id: str | None = None, path: Path = SETLISTS_PATH,
+                 mood_tags: list[str] | None = None) -> dict:
     name = (name or "").strip()
     if not name:
         raise InvalidSetlist("A setlist needs a name.")
@@ -107,6 +108,8 @@ def save_setlist(name: str, track_ids: list[str], tracks_by_id: dict[str, dict],
         setlist.update(
             name=name,
             tracks=_snapshot(track_ids, tracks_by_id, (existing or {}).get("tracks", [])),
+            # The mood/vibe tags this set was generated from or filtered by.
+            mood_tags=list(mood_tags or []),
             updated_at=_now(),
         )
         data["setlists"][setlist["id"]] = setlist

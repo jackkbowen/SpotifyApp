@@ -60,4 +60,11 @@ def staleness_warnings(library: dict, liked_path: Path = LIKED_SONGS_PATH) -> li
             f"{pending} tracks haven't been looked up on GetSongBPM yet. "
             "Run `python enrich_library.py` to enrich them."
         )
+    tag_counts = library.get("tag_status_counts") or {}
+    tag_pending = tag_counts.get("pending", 0) if tag_counts else library.get("track_count", 0)
+    if tag_pending:
+        warnings.append(
+            f"{tag_pending} tracks have no mood/genre tags fetched yet, so mood features won't "
+            "see them. Add LASTFM_API_KEY to .env and run `python enrich_library.py --only tags`."
+        )
     return warnings

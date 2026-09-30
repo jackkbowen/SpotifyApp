@@ -14,5 +14,6 @@ LIKED_SONGS_PATH = PROJECT_DIR / "output" / "liked_songs.json"
 DATA_DIR = Path(os.environ.get("SETLIST_DATA_DIR") or PROJECT_DIR / "data")
 BPM_CACHE_PATH = DATA_DIR / "bpm_cache.json"
 UNMATCHED_PATH = DATA_DIR / "unmatched.json"
+LASTFM_CACHE_PATH = DATA_DIR / "lastfm_tag_cache.json"
 ENRICHED_LIBRARY_PATH = DATA_DIR / "library_enriched.json"
 SETLISTS_PATH = DATA_DIR / "setlists.json"

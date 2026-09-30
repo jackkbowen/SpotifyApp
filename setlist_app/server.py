@@ -71,7 +71,11 @@ def _save(setlist_id=None):
     track_ids = body.get("track_ids")
     if not isinstance(track_ids, list) or not all(isinstance(t, str) for t in track_ids):
         raise setlists.InvalidSetlist("track_ids must be a list of Spotify track ids.")
-    saved = setlists.save_setlist(body.get("name", ""), track_ids, _tracks_by_id(), setlist_id)
+    mood_tags = body.get("mood_tags") or []
+    if not isinstance(mood_tags, list) or not all(isinstance(t, str) for t in mood_tags):
+        raise setlists.InvalidSetlist("mood_tags must be a list of tag names.")
+    saved = setlists.save_setlist(body.get("name", ""), track_ids, _tracks_by_id(), setlist_id,
+                                  mood_tags=mood_tags)
     return jsonify(saved)
 
 

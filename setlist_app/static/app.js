@@ -1,61 +1,6 @@
 "use strict";
 
-// ---------------------------------------------------------------------------
-// Camelot wheel + transition rules
-// ---------------------------------------------------------------------------
-
-const CAMELOT_KEYS = [];
-for (let n = 1; n <= 12; n++) CAMELOT_KEYS.push(`${n}A`, `${n}B`);
-
-const CAMELOT_NAMES = {
-  "1A": "Abm", "2A": "Ebm", "3A": "Bbm", "4A": "Fm", "5A": "Cm", "6A": "Gm",
-  "7A": "Dm", "8A": "Am", "9A": "Em", "10A": "Bm", "11A": "F#m", "12A": "C#m",
-  "1B": "B", "2B": "F#", "3B": "Db", "4B": "Ab", "5B": "Eb", "6B": "Bb",
-  "7B": "F", "8B": "C", "9B": "G", "10B": "D", "11B": "A", "12B": "E",
-};
-
-function parseCamelot(code) {
-  const m = /^(\d{1,2})([AB])$/.exec(code || "");
-  return m ? { n: Number(m[1]), l: m[2] } : null;
-}
-
-// Compatible = same key, ±1 on the wheel with the same letter, or the
-// relative major/minor (same number, other letter).
-function keyRelation(fromCode, toCode) {
-  const a = parseCamelot(fromCode), b = parseCamelot(toCode);
-  if (!a || !b) return null;
-  if (a.n === b.n && a.l === b.l) return { compatible: true, label: "same key" };
-  if (a.l === b.l) {
-    const step = (b.n - a.n + 12) % 12;
-    if (step === 1) return { compatible: true, label: "+1" };
-    if (step === 11) return { compatible: true, label: "−1" };
-  }
-  if (a.n === b.n) return { compatible: true, label: "relative" };
-  return { compatible: false, label: "clash" };
-}
-
-function compatibleKeys(code) {
-  return new Set(CAMELOT_KEYS.filter((k) => keyRelation(code, k)?.compatible));
-}
-
-// Bass music moves between half and double time (70 ↔ 140, 87 ↔ 174), and
-// BPM databases list the same track either way, so compare at 1×, 2× and ½×
-// and use whichever is closest.
-function bpmRelation(fromBpm, toBpm) {
-  if (!fromBpm || !toBpm) return null;
-  let best = null;
-  for (const [factor, label] of [[1, ""], [2, "2×"], [0.5, "½×"]]) {
-    const effective = toBpm * factor;
-    const pct = ((effective - fromBpm) / fromBpm) * 100;
-    // Only prefer a half/double reading when it's clearly closer.
-    if (!best || Math.abs(pct) + (factor === 1 ? 0 : 1) < Math.abs(best.pct)) {
-      best = { delta: effective - fromBpm, pct, label };
-    }
-  }
-  const abs = Math.abs(best.pct);
-  best.cls = abs <= 3 ? "good" : abs <= 6 ? "ok" : "bad";
-  return best;
-}
+// Camelot/BPM rules, mood matching and transition scoring live in scoring.js.
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -138,14 +83,25 @@ const state = {
   selected: new Set(),
   savedSetlists: [],
   // Working setlist. `snapshots` holds saved info for tracks that are no
-  // longer in the library, so old setlists still render.
-  set: { id: null, name: "", trackIds: [], snapshots: {} },
-  savedFingerprint: JSON.stringify({ name: "", trackIds: [] }),
+  // longer in the library, so old setlists still render. `mood` is the active
+  // mood/vibe tag filter for suggestions; `arc` is the target energy arc of a
+  // generated draft (drawn over the energy bars).
+  set: blankSet(),
+  savedFingerprint: "",
   arcMetric: "danceability",
+  vocab: [],
+  suggestOpen: false,
+  gen: { tags: [], shape: "build" },
 };
 
-const fingerprint = () => JSON.stringify({ name: state.set.name.trim(), trackIds: state.set.trackIds });
+function blankSet() {
+  return { id: null, name: "", trackIds: [], snapshots: {}, mood: [], arc: null };
+}
+
+const fingerprintOf = (name, trackIds, mood) => JSON.stringify({ name: name.trim(), trackIds, mood: mood || [] });
+const fingerprint = () => fingerprintOf(state.set.name, state.set.trackIds, state.set.mood);
 const isDirty = () => fingerprint() !== state.savedFingerprint;
+state.savedFingerprint = fingerprint();
 
 // ---------------------------------------------------------------------------
 // Library table
@@ -160,6 +116,7 @@ const COLUMNS = [
   { key: "track_name", label: "Track", value: (t) => t.track_name?.toLowerCase() },
   { key: "artists", label: "Artist", value: (t) => artistNames(t).toLowerCase() },
   { key: "album", label: "Album", value: (t) => t.album?.name?.toLowerCase() },
+  { key: "tags", label: "Tags", title: "Mood/genre tags from Last.fm, strongest first", value: (t) => t.tags?.[0]?.tag ?? null },
   { key: "duration_ms", label: "Time", num: true, value: (t) => t.duration_ms },
   { key: "bpm", label: "BPM", num: true, metric: true, value: (t) => enr(t).bpm ?? null },
   { key: "key", label: "Key", metric: true, value: (t) => camelotSortValue(enr(t).camelot) },
@@ -209,7 +166,7 @@ function renderHead() {
   }
   $("library-head").innerHTML = cells.join("");
   $("library-cols").innerHTML = '<col class="c-check"><col class="c-add">' +
-    COLUMNS.map((c) => `<col class="c-${c.key === "track_name" ? "track" : c.key === "album" ? "album" : c.key}">`).join("");
+    COLUMNS.map((c) => `<col class="c-${c.key === "track_name" ? "track" : c.key}">`).join("");
 }
 
 function none(t) {
@@ -227,6 +184,17 @@ function bpmCell(e, t) {
   if (!e.source_url) return text;
   const title = `GetSongBPM match: ${e.matched_title || "?"} — ${e.matched_artist || "?"}`;
   return `<a class="bpm-link" href="${esc(e.source_url)}" target="_blank" rel="noopener" title="${esc(title)}">${text}</a>`;
+}
+
+function tagTitle(t) {
+  if (t.tag_status === "pending") return "Tags not fetched yet — run enrich_library.py";
+  if (!t.tags?.length) return "No usable tags on Last.fm";
+  return t.tags.map((x) => `${x.tag} (${x.weight}${x.source === "artist" ? ", from artist" : ""})`).join(", ");
+}
+
+function tagsCell(t) {
+  if (!t.tags?.length) return '<span class="none">—</span>';
+  return esc(t.tags.slice(0, 3).map((x) => x.tag).join(", "));
 }
 
 function pctCell(value, t) {
@@ -253,6 +221,7 @@ function renderTable() {
       <td class="track" title="${esc(t.track_name)}"><a href="${esc(t.spotify_url)}" target="_blank" rel="noopener">${esc(t.track_name)}</a></td>
       <td class="sub" title="${esc(artistNames(t))}">${esc(artistNames(t))}</td>
       <td class="sub" title="${esc(t.album?.name)}">${esc(t.album?.name)}</td>
+      <td class="sub tags-cell" title="${esc(tagTitle(t))}">${tagsCell(t)}</td>
       <td class="num">${fmtDuration(t.duration_ms)}</td>
       <td class="num metric">${bpmCell(e, t)}</td>
       <td class="metric">${keyCell(e, t)}</td>
@@ -322,17 +291,32 @@ function setChanged() {
   renderTable();
 }
 
-function transitionHtml(a, b) {
+function bpmPill(a, b) {
   const ea = enr(a), eb = enr(b);
   const bpm = bpmRelation(ea.bpm, eb.bpm);
-  const key = keyRelation(ea.camelot, eb.camelot);
-  const bpmPill = bpm
+  return bpm
     ? `<span class="pill ${bpm.cls}" title="${fmtBpm(ea.bpm)} → ${fmtBpm(eb.bpm)} BPM${bpm.label ? ` (compared at ${bpm.label} tempo)` : ""}">${signed(bpm.delta)} BPM · ${signed(bpm.pct)}%${bpm.label ? ` · ${bpm.label}` : ""}</span>`
     : '<span class="pill unknown">BPM ?</span>';
-  const keyPill = key
+}
+
+function keyPill(a, b) {
+  const ea = enr(a), eb = enr(b);
+  const key = keyRelation(ea.camelot, eb.camelot);
+  return key
     ? `<span class="pill ${key.compatible ? "good" : "bad"}" title="Camelot ${ea.camelot} → ${eb.camelot}">${esc(ea.camelot)} → ${esc(eb.camelot)} · ${key.label}${key.compatible ? " ✓" : ""}</span>`
     : '<span class="pill unknown">key ?</span>';
-  return `<li class="transition" aria-label="Transition">${bpmPill}${keyPill}</li>`;
+}
+
+function energyPill(a, b) {
+  const da = enr(a).danceability, db = enr(b).danceability;
+  if (da == null || db == null) return '<span class="pill unknown">energy ?</span>';
+  const d = db - da, abs = Math.abs(d);
+  const cls = abs <= 10 ? "good" : abs <= 25 ? "ok" : "bad";
+  return `<span class="pill ${cls}" title="Danceability ${da} → ${db}">energy ${signed(d, 0)}</span>`;
+}
+
+function transitionHtml(a, b) {
+  return `<li class="transition" aria-label="Transition">${bpmPill(a, b)}${keyPill(a, b)}</li>`;
 }
 
 function renderSet() {
@@ -369,6 +353,61 @@ function renderSet() {
   renderSummary(tracks);
   renderArc(tracks);
   renderSetStatus();
+  renderMood();
+  renderSuggestions();
+}
+
+function chip(tag, removable, count) {
+  return `<span class="chip" data-tag="${esc(tag)}">${esc(tag)}${count != null ? ` <span class="chip-count">${count}</span>` : ""}${removable ? ` <button type="button" class="chip-x" aria-label="Remove ${esc(tag)}">×</button>` : ""}</span>`;
+}
+
+function renderMood() {
+  const mood = state.set.mood;
+  $("mood-chips").innerHTML = mood.length
+    ? mood.map((t) => chip(t, true)).join("")
+    : '<span class="none">any (whole library)</span>';
+  $("mood-edit").textContent = mood.length ? "Change…" : "Set mood…";
+}
+
+// ---- Suggest next track ----
+
+function renderSuggestions() {
+  const ids = state.set.trackIds;
+  $("suggest-wrap").hidden = ids.length === 0;
+  $("suggest-toggle").setAttribute("aria-expanded", String(state.suggestOpen));
+  $("suggest-toggle").textContent = state.suggestOpen ? "Hide suggestions" : "Suggest next track";
+  const box = $("suggestions");
+  box.hidden = !state.suggestOpen || !ids.length;
+  if (box.hidden) return;
+
+  const last = setTrack(ids[ids.length - 1]);
+  const mood = state.set.mood;
+  const { suggestions, candidates } = suggestNext(state.tracks, ids, { tags: mood, limit: 12 });
+  const scope = mood.length ? `mood: ${mood.map(esc).join(", ")}` : "whole library";
+  const noData = !enr(last).bpm && !enr(last).camelot;
+  const head = `<div class="sugg-head">After <b>${esc(last.track_name)}</b> · ${scope} · ${candidates} candidates</div>` +
+    (noData ? '<p class="hint">This track has no BPM/key data, so suggestions can only weigh energy and mood.</p>' : "");
+  if (!suggestions.length) {
+    box.innerHTML = head + `<p class="hint">No candidates${mood.length ? " with these mood tags left — change or clear the mood" : ""}.</p>`;
+    return;
+  }
+  box.innerHTML = head + '<ol class="sugg-list">' + suggestions.map(({ track, t, matched }) => {
+    const fit = Math.round((1 - t.cost) * 100);
+    const moodPill = mood.length
+      ? `<span class="pill ${matched.length === mood.length ? "good" : "ok"}" title="Matching mood tags (weight)">${matched.map((m) => `${esc(m.tag)} ${m.weight}`).join(", ")}</span>`
+      : "";
+    return `<li class="sugg" data-id="${esc(track.track_id)}">
+      <div class="sugg-main">
+        <div class="title" title="${esc(track.track_name)}">${esc(track.track_name)}</div>
+        <div class="artist">${esc(artistNames(track))}${enr(track).bpm ? ` · ${fmtBpm(enr(track).bpm)} BPM` : ""}${enr(track).camelot ? ` · ${esc(enr(track).camelot)}` : ""}</div>
+        <div class="why">${bpmPill(last, track)}${keyPill(last, track)}${energyPill(last, track)}${moodPill}</div>
+      </div>
+      <div class="sugg-side">
+        <span class="fit" title="Transition fit: 100 = ideal. Weighted: BPM ${WEIGHTS.bpm}, key ${WEIGHTS.key}, energy ${WEIGHTS.energy}${mood.length ? `, mood ${WEIGHTS.mood}` : ""}; unknown data counts as uncertain.">${fit}</span>
+        <button type="button" class="add" title="Add to end of set">+</button>
+      </div>
+    </li>`;
+  }).join("") + "</ol>";
 }
 
 function renderSummary(tracks) {
@@ -425,6 +464,15 @@ function renderArc(tracks) {
     const h = Math.max(3, ((v - lo) / Math.max(hi - lo, 1)) * (H - 2));
     return `<rect x="${x}" y="${H - h}" width="${barW}" height="${h}" rx="1.5" fill="var(--bar)"><title>${label}</title></rect>`;
   });
+  // A generated draft's target arc, as a dashed line over the danceability bars.
+  const arc = state.set.arc;
+  if (arc && arc.range && state.arcMetric === "danceability" && arc.shape !== "free") {
+    const points = values.map((_, i) => {
+      const target = arcTarget(arc.shape, n > 1 ? i / (n - 1) : 0, arc.range);
+      return `${(i * (barW + gap) + barW / 2).toFixed(1)},${(H - (target / 100) * (H - 2)).toFixed(1)}`;
+    });
+    bars.push(`<polyline points="${points.join(" ")}" fill="none" stroke="var(--text)" stroke-width="1.5" stroke-dasharray="4 3" opacity=".55" vector-effect="non-scaling-stroke"><title>Target: ${esc(ARC_SHAPES[arc.shape])}</title></polyline>`);
+  }
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
   svg.innerHTML = bars.join("");
 }
@@ -467,6 +515,8 @@ function loadIntoEditor(setlist) {
     name: setlist.name,
     trackIds: setlist.tracks.map((t) => t.track_id),
     snapshots: Object.fromEntries(setlist.tracks.map((t) => [t.track_id, t])),
+    mood: setlist.mood_tags || [],
+    arc: null,
   };
   state.savedFingerprint = fingerprint();
   setChanged();
@@ -480,12 +530,15 @@ async function saveSet() {
     $("set-name").focus();
     return false;
   }
-  const body = JSON.stringify({ name, track_ids: state.set.trackIds });
+  const body = JSON.stringify({ name, track_ids: state.set.trackIds, mood_tags: state.set.mood });
+  const arc = state.set.arc;  // keep a generated draft's arc overlay after saving
   try {
     const saved = state.set.id
       ? await api(`/api/setlists/${state.set.id}`, { method: "PUT", body })
       : await api("/api/setlists", { method: "POST", body });
     loadIntoEditor(saved);
+    state.set.arc = arc;
+    renderArc(state.set.trackIds.map(setTrack));
     await refreshSavedList();
     toast(`Saved “${saved.name}”`);
     return true;
@@ -627,8 +680,9 @@ function bindEvents() {
 
   $("set-new").addEventListener("click", () => {
     if (!confirmDiscard()) return;
-    state.set = { id: null, name: "", trackIds: [], snapshots: {} };
+    state.set = blankSet();
     state.savedFingerprint = fingerprint();
+    hideNotice();
     setChanged();
     renderSavedList();
     $("set-name").focus();
@@ -640,6 +694,7 @@ function bindEvents() {
     if (!confirmDiscard()) { renderSavedList(); return; }
     try {
       loadIntoEditor(await api(`/api/setlists/${id}`));
+      hideNotice();
     } catch (err) {
       toast(err.message, true);
       await refreshSavedList();
@@ -654,7 +709,7 @@ function bindEvents() {
     } catch (err) {
       if (err.code !== "not_found") { toast(err.message, true); return; }
     }
-    state.set = { id: null, name: "", trackIds: [], snapshots: {} };
+    state.set = blankSet();
     state.savedFingerprint = fingerprint();
     setChanged();
     await refreshSavedList();
@@ -663,14 +718,180 @@ function bindEvents() {
   $("export-csv").addEventListener("click", () => exportSet("csv"));
   $("export-m3u").addEventListener("click", () => exportSet("m3u"));
 
-  document.querySelectorAll(".seg button").forEach((btn) => btn.addEventListener("click", () => {
+  document.querySelectorAll(".arc .seg button").forEach((btn) => btn.addEventListener("click", () => {
     state.arcMetric = btn.dataset.metric;
-    document.querySelectorAll(".seg button").forEach((b) => b.classList.toggle("active", b === btn));
+    document.querySelectorAll(".arc .seg button").forEach((b) => b.classList.toggle("active", b === btn));
     renderArc(state.set.trackIds.map(setTrack));
   }));
 
+  // Mood chips in the setlist panel
+  $("mood-chips").addEventListener("click", (e) => {
+    const x = e.target.closest(".chip-x");
+    if (!x) return;
+    const tag = x.closest(".chip").dataset.tag;
+    state.set.mood = state.set.mood.filter((t) => t !== tag);
+    setChanged();
+  });
+  $("mood-edit").addEventListener("click", () => openGenerate());
+
+  // Suggest next track
+  $("suggest-toggle").addEventListener("click", () => {
+    state.suggestOpen = !state.suggestOpen;
+    renderSuggestions();
+  });
+  $("suggestions").addEventListener("click", (e) => {
+    const item = e.target.closest(".sugg");
+    if (item && e.target.closest("button.add")) addToSet([item.dataset.id]);
+  });
+
+  bindGenerateDialog();
+  $("set-generate").addEventListener("click", () => openGenerate());
+  $("gen-notice").addEventListener("click", (e) => { if (e.target.closest(".notice-x")) hideNotice(); });
+
   window.addEventListener("beforeunload", (e) => {
     if (isDirty()) { e.preventDefault(); e.returnValue = ""; }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Generate setlist dialog
+// ---------------------------------------------------------------------------
+
+function showNotice(html, warn = false) {
+  const el = $("gen-notice");
+  el.className = `notice${warn ? " warn" : ""}`;
+  el.innerHTML = `<div>${html}</div><button type="button" class="notice-x" aria-label="Dismiss">×</button>`;
+  el.hidden = false;
+}
+
+function hideNotice() {
+  $("gen-notice").hidden = true;
+}
+
+function openGenerate() {
+  state.gen.tags = [...state.set.mood];
+  $("tag-search").value = "";
+  renderGenDialog();
+  $("gen-dialog").showModal();
+  $("tag-search").focus();
+}
+
+function renderGenDialog() {
+  const g = state.gen;
+  $("tag-selected").innerHTML = g.tags.length
+    ? g.tags.map((t) => chip(t, true)).join("")
+    : '<span class="none">No tags selected</span>';
+
+  const q = $("tag-search").value.trim().toLowerCase();
+  const selected = new Set(g.tags);
+  const options = state.vocab.filter((v) => !selected.has(v.tag) && (!q || v.tag.includes(q))).slice(0, 60);
+  $("tag-options").innerHTML = state.vocab.length
+    ? (options.length
+      ? options.map((v) => `<button type="button" class="tag-opt" data-tag="${esc(v.tag)}" role="option">${esc(v.tag)} <span class="chip-count">${v.count}</span></button>`).join("")
+      : '<span class="none">No matching tags</span>')
+    : '<span class="none">No tags yet: add LASTFM_API_KEY to .env and run <code>python enrich_library.py --only tags</code>.</span>';
+
+  if (g.tags.length) {
+    const pool = moodPool(state.tracks, g.tags);
+    const withData = pool.filter((c) => enr(c.track).bpm && enr(c.track).camelot).length;
+    const all = pool.filter((c) => c.matched.length === g.tags.length).length;
+    $("pool-preview").innerHTML = `<b>${pool.length}</b> tracks match${g.tags.length > 1 ? ` (${all} match all ${g.tags.length} tags)` : ""} · ${withData} of them have BPM/key data`;
+  } else {
+    $("pool-preview").textContent = "";
+  }
+
+  $("gen-shape").innerHTML = Object.entries(ARC_SHAPES).map(([k, label]) =>
+    `<button type="button" data-shape="${k}" class="${g.shape === k ? "active" : ""}" role="radio" aria-checked="${g.shape === k}">${label}</button>`).join("");
+  $("gen-go").disabled = $("gen-mood-only").disabled = !g.tags.length;
+}
+
+function autoName(tags, shape) {
+  const date = new Date().toISOString().slice(0, 10);
+  return `${tags.slice(0, 3).join(" + ")} (${ARC_SHAPES[shape].toLowerCase()}) ${date}`;
+}
+
+function runGenerate() {
+  const g = state.gen;
+  const length = Math.max(1, Math.round(Number($("gen-length").value) || 0));
+  const byMinutes = $("gen-length-unit").value === "minutes";
+  if (!confirmDiscard()) return;
+  const result = generateSetlist(state.tracks, {
+    tags: g.tags, shape: g.shape, count: byMinutes ? null : length, minutes: byMinutes ? length : null,
+  });
+  $("gen-dialog").close();
+  if (!result.trackIds.length) {
+    showNotice(`No tracks carry ${g.tags.map((t) => `“${esc(t)}”`).join(" or ")}. Try other tags.`, true);
+    return;
+  }
+  state.set = {
+    ...blankSet(),
+    name: autoName(g.tags, g.shape),
+    trackIds: result.trackIds,
+    mood: [...g.tags],
+    arc: { shape: g.shape, range: result.range },
+  };
+  state.savedFingerprint = fingerprintOf("", [], []);
+  state.suggestOpen = false;
+  setChanged();
+  renderSavedList();
+
+  const got = `${result.trackIds.length} tracks · ${fmtDuration(result.elapsedMs)}`;
+  const lines = [];
+  if (result.shortfall) {
+    const wanted = byMinutes ? `${length} minutes` : `${length} tracks`;
+    lines.push(`<b>Only ${result.poolSize} track${result.poolSize === 1 ? "" : "s"} match this mood</b>, so the draft is ${got} instead of the ${wanted} you asked for. Nothing outside the mood was added. Add more tags to widen it.`);
+  } else {
+    lines.push(`<b>Draft generated:</b> ${got}, chosen from ${result.poolSize} matching tracks. Review, reorder or swap, then save.`);
+    if (result.poolSize < 2 * result.trackIds.length) lines.push("The mood pool is small, so later transitions had little to choose from.");
+  }
+  const noData = result.trackIds.length - result.withData;
+  if (noData) lines.push(`${noData} track${noData === 1 ? " has" : "s have"} no BPM/key data, so ${noData === 1 ? "its" : "their"} transitions are unscored guesses.`);
+  if (!result.range && g.shape !== "free") lines.push("Too few tracks here have energy data to follow the arc; ordering used BPM/key only.");
+  showNotice(lines.join("<br>"), result.shortfall);
+}
+
+function bindGenerateDialog() {
+  $("tag-search").addEventListener("input", renderGenDialog);
+  $("tag-search").addEventListener("keydown", (e) => {
+    // Enter picks the first matching tag instead of submitting the form.
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    const first = $("tag-options").querySelector(".tag-opt");
+    if (first) first.click();
+  });
+  $("tag-options").addEventListener("click", (e) => {
+    const opt = e.target.closest(".tag-opt");
+    if (!opt) return;
+    state.gen.tags.push(opt.dataset.tag);
+    $("tag-search").value = "";
+    renderGenDialog();
+    $("tag-search").focus();
+  });
+  $("tag-selected").addEventListener("click", (e) => {
+    const x = e.target.closest(".chip-x");
+    if (!x) return;
+    state.gen.tags = state.gen.tags.filter((t) => t !== x.closest(".chip").dataset.tag);
+    renderGenDialog();
+  });
+  $("gen-shape").addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-shape]");
+    if (!btn) return;
+    state.gen.shape = btn.dataset.shape;
+    renderGenDialog();
+  });
+  $("gen-length-unit").addEventListener("change", (e) => {
+    $("gen-length").value = e.target.value === "minutes" ? 60 : 20;
+  });
+  $("gen-cancel").addEventListener("click", () => $("gen-dialog").close());
+  $("gen-mood-only").addEventListener("click", () => {
+    state.set.mood = [...state.gen.tags];
+    $("gen-dialog").close();
+    state.suggestOpen = true;
+    setChanged();
+  });
+  $("gen-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    runGenerate();
   });
 }
 
@@ -683,7 +904,8 @@ function renderLibraryMeta(lib) {
   const withData = state.tracks.filter((t) => enr(t).bpm || enr(t).camelot).length;
   $("library-stats").textContent =
     `${state.tracks.length} tracks · ${withData} with BPM/key · ` +
-    `${(c.unmatched || 0)} not found on GetSongBPM` + (c.pending ? ` · ${c.pending} not looked up yet` : "");
+    `${(c.unmatched || 0)} not found on GetSongBPM` + (c.pending ? ` · ${c.pending} not looked up yet` : "") +
+    ` · ${state.tracks.filter((t) => t.tags?.length).length} with mood tags`;
 
   const warnings = lib.warnings || [];
   $("warnings").hidden = !warnings.length;
@@ -704,9 +926,10 @@ async function init() {
   }
   state.tracks = lib.tracks.filter((t) => t.track_id);
   for (const t of state.tracks) {
-    t._search = `${t.track_name || ""} ${artistNames(t)}`.toLowerCase();
+    t._search = `${t.track_name || ""} ${artistNames(t)} ${(t.tags || []).map((x) => x.tag).join(" ")}`.toLowerCase();
     state.byId.set(t.track_id, t);
   }
+  state.vocab = tagVocabulary(state.tracks);
   renderLibraryMeta(lib);
   $("main").hidden = false;
 
@@ -720,10 +943,18 @@ async function init() {
     const saved = draft.id && state.savedSetlists.some((s) => s.id === draft.id)
       ? await api(`/api/setlists/${draft.id}`).catch(() => null)
       : null;
-    state.set = { id: saved ? draft.id : null, name: draft.name || "", trackIds: draft.trackIds, snapshots: draft.snapshots || {} };
+    state.set = {
+      ...blankSet(),
+      id: saved ? draft.id : null,
+      name: draft.name || "",
+      trackIds: draft.trackIds,
+      snapshots: draft.snapshots || {},
+      mood: Array.isArray(draft.mood) ? draft.mood : [],
+      arc: draft.arc || null,
+    };
     state.savedFingerprint = saved
-      ? JSON.stringify({ name: saved.name.trim(), trackIds: saved.tracks.map((t) => t.track_id) })
-      : JSON.stringify({ name: "", trackIds: [] });
+      ? fingerprintOf(saved.name, saved.tracks.map((t) => t.track_id), saved.mood_tags)
+      : fingerprintOf("", [], []);
     renderSavedList();
   }
   renderSet();

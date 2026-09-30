@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Enrich the exported Liked Songs library with BPM, key, danceability and
-acousticness from the GetSongBPM API, and write data/library_enriched.json.
+acousticness (GetSongBPM) and mood/genre tags (Last.fm, see tag_enrichment.py),
+and write data/library_enriched.json.
 
 Usage:
-    python enrich_library.py                   # look up everything not cached yet
+    python enrich_library.py                   # both steps, everything not cached yet
+    python enrich_library.py --only tags       # just the Last.fm tag step (or --only bpm)
     python enrich_library.py --limit 25        # try a few first to check match quality
     python enrich_library.py --retry-unmatched # also retry tracks not found before
-    python enrich_library.py --no-fetch        # just rebuild library_enriched.json from the cache
+    python enrich_library.py --no-fetch        # just rebuild library_enriched.json from the caches
+
+A step whose API key isn't in .env is skipped with a note.
 
 Re-run it any time after a new Spotify export: cached ISRCs are never looked
 up again, so only newly liked songs cost API requests.
@@ -41,6 +45,7 @@ from setlist_app.paths import (
     BPM_CACHE_PATH,
     ENRICHED_LIBRARY_PATH,
     ENV_PATH,
+    LASTFM_CACHE_PATH,
     LIKED_SONGS_PATH,
     UNMATCHED_PATH,
 )
@@ -445,10 +450,16 @@ def build_sources(api_key: str, limiter: RateLimiter) -> list:
 # Output
 # --------------------------------------------------------------------------- #
 
-def build_enriched_library(library: dict, cache: dict, unmatched: dict, source_path: Path) -> dict:
+def build_enriched_library(library: dict, cache: dict, unmatched: dict, source_path: Path,
+                           lastfm_cache: dict) -> dict:
+    import tag_enrichment  # imported here: tag_enrichment itself imports from this module
+
+    tag_results = tag_enrichment.tags_for_library(library["tracks"], lastfm_cache)
+    tag_counts = {"tagged": 0, "no_tags": 0, "pending": 0}
     tracks = []
     counts = {"enriched": 0, "unmatched": 0, "pending": 0}
-    for track in library["tracks"]:
+    for track, (tag_status, tags) in zip(library["tracks"], tag_results):
+        tag_counts[tag_status] += 1
         slim = slim_track(track)
         isrc = slim.get("isrc")
         if isrc in cache:
@@ -460,14 +471,18 @@ def build_enriched_library(library: dict, cache: dict, unmatched: dict, source_p
         counts[status] += 1
         # enrichment_status: "enriched" = data found, "unmatched" = looked up
         # but no source had it, "pending" = not looked up yet (newly liked).
-        tracks.append({**slim, "enrichment_status": status, "enrichment": enrichment})
+        # tags: cleaned Last.fm tags, strongest first, [{tag, weight 0-100, source}].
+        # tag_status: "tagged", "no_tags" (looked up, nothing usable) or "pending".
+        tracks.append({**slim, "enrichment_status": status, "enrichment": enrichment,
+                       "tag_status": tag_status, "tags": tags})
     return {
         "generated_at": now_iso(),
         "source_file": str(source_path),
         "source_exported_at": library.get("exported_at"),
-        "attribution": GETSONGBPM_ATTRIBUTION,
+        "attribution": f"{GETSONGBPM_ATTRIBUTION}; tag data from Last.fm (https://www.last.fm)",
         "track_count": len(tracks),
         "status_counts": counts,
+        "tag_status_counts": tag_counts,
         "tracks": tracks,
     }
 
@@ -480,13 +495,21 @@ def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--input", type=Path, default=LIKED_SONGS_PATH,
                         help=f"Liked Songs export to read (default: {LIKED_SONGS_PATH})")
+    parser.add_argument("--only", choices=("bpm", "tags"), default=None,
+                        help="Run just one step: 'bpm' (GetSongBPM) or 'tags' (Last.fm). Default: both.")
     parser.add_argument("--limit", type=int, default=None,
-                        help="Look up at most N uncached tracks this run (useful for a first test).")
+                        help="Look up at most N uncached tracks per step this run (useful for a first test).")
     parser.add_argument("--retry-unmatched", action="store_true",
-                        help="Look up tracks that previously had no match again.")
+                        help="Look up tracks that previously had no match/weren't found again.")
     parser.add_argument("--no-fetch", action="store_true",
-                        help="Don't call the API; just rebuild library_enriched.json from the cache.")
+                        help="Don't call any API; just rebuild library_enriched.json from the caches.")
     return parser.parse_args(argv)
+
+
+def _api_key(name: str) -> str | None:
+    load_dotenv(ENV_PATH)
+    key = os.getenv(name, "").strip()
+    return None if not key or key.startswith("your-") else key
 
 
 def main(argv=None) -> int:
@@ -510,39 +533,61 @@ def main(argv=None) -> int:
     if args.limit is not None:
         todo = todo[: args.limit]
 
-    print(f"{len(library['tracks'])} tracks, {len(by_isrc)} unique ISRCs "
-          f"({len(by_isrc) - len(todo)} already cached or known unmatched, {len(todo)} to look up).")
+    print(f"{len(library['tracks'])} tracks, {len(by_isrc)} unique ISRCs (BPM/key: "
+          f"{len(by_isrc) - len(todo)} already cached or known unmatched, {len(todo)} to look up).")
     if missing_isrc:
         print(f"{missing_isrc} tracks have no ISRC and will show as 'no data'.")
 
-    stopped_early: str | None = None
-    if todo and not args.no_fetch:
-        load_dotenv(ENV_PATH)
-        api_key = os.getenv("GETSONGBPM_API_KEY", "").strip()
-        if not api_key or api_key.startswith("your-"):
-            print(
-                "Error: GETSONGBPM_API_KEY is not set in .env. See README.md for how to get "
-                "a free key, or run with --no-fetch to build the library without BPM data.",
-                file=sys.stderr,
-            )
-            return 1
-        limiter = RateLimiter(cache_file.get("recent_requests", []))
-        sources = build_sources(api_key, limiter)
-        stopped_early = run_lookups(todo, by_isrc, sources, cache, unmatched, cache_file, limiter)
+    import tag_enrichment
 
-    enriched = build_enriched_library(library, cache, unmatched, args.input)
+    lastfm_cache = load_json(LASTFM_CACHE_PATH, tag_enrichment.empty_cache())
+    stopped_early: str | None = None
+    missing_key = False
+
+    # Step 1: BPM/key from GetSongBPM.
+    if args.only in (None, "bpm") and todo and not args.no_fetch:
+        api_key = _api_key("GETSONGBPM_API_KEY")
+        if api_key:
+            print("\n== BPM/key (GetSongBPM) ==")
+            limiter = RateLimiter(cache_file.get("recent_requests", []))
+            sources = build_sources(api_key, limiter)
+            stopped_early = run_lookups(todo, by_isrc, sources, cache, unmatched, cache_file, limiter)
+        else:
+            missing_key = True
+            print("Skipping BPM/key: GETSONGBPM_API_KEY is not set in .env (see README.md).",
+                  file=sys.stderr)
+
+    # Step 2: mood/genre tags from Last.fm.
+    if args.only in (None, "tags") and not args.no_fetch and not stopped_early:
+        api_key = _api_key("LASTFM_API_KEY")
+        if api_key:
+            print("\n== Mood/genre tags (Last.fm) ==")
+            stopped_early = tag_enrichment.run_tag_lookups(
+                library["tracks"], lastfm_cache, api_key, args.limit, args.retry_unmatched)
+        else:
+            missing_key = True
+            print("Skipping tags: LASTFM_API_KEY is not set in .env (see README.md).", file=sys.stderr)
+
+    enriched = build_enriched_library(library, cache, unmatched, args.input, lastfm_cache)
     save_json(ENRICHED_LIBRARY_PATH, enriched)
 
     counts = enriched["status_counts"]
+    tag_counts = enriched["tag_status_counts"]
     unique_enriched = sum(1 for isrc in by_isrc if isrc in cache)
     print()
     print("Enrichment summary")
-    print(f"  Unique tracks with data:  {unique_enriched} / {len(by_isrc)}")
-    print(f"  Library tracks:           {counts['enriched']} enriched, "
+    print(f"  Unique tracks with BPM/key: {unique_enriched} / {len(by_isrc)}")
+    print(f"  Library tracks (BPM/key):   {counts['enriched']} enriched, "
           f"{counts['unmatched']} no match, {counts['pending']} not looked up yet")
-    print(f"  Enriched library:         {ENRICHED_LIBRARY_PATH}")
-    print(f"  Lookup cache:             {BPM_CACHE_PATH}")
-    print(f"  Unmatched log:            {UNMATCHED_PATH}")
+    print(f"  Library tracks (tags):      {tag_counts['tagged']} tagged, "
+          f"{tag_counts['no_tags']} no usable tags, {tag_counts['pending']} not looked up yet")
+    print(f"  Enriched library:           {ENRICHED_LIBRARY_PATH}")
+    print(f"  Caches:                     {BPM_CACHE_PATH.name}, {UNMATCHED_PATH.name}, "
+          f"{LASTFM_CACHE_PATH.name} (in {BPM_CACHE_PATH.parent})")
+    # Asking for one step explicitly without its key is an error; otherwise a
+    # missing key just skips that step.
+    if missing_key and args.only:
+        return 1
     if stopped_early:
         print(f"\nStopped early: {stopped_early}", file=sys.stderr)
         return 1

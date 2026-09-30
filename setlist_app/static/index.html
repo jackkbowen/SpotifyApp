@@ -64,6 +64,7 @@
     <section class="panel setlist" aria-label="Setlist">
       <div class="set-toolbar">
         <select id="saved-setlists" aria-label="Saved setlists"></select>
+        <button id="set-generate" type="button" title="Build a draft setlist from mood/vibe tags">Generate…</button>
         <button id="set-new" class="ghost" type="button">New</button>
         <button id="set-delete" class="ghost danger" type="button">Delete</button>
       </div>
@@ -77,6 +78,13 @@
         <button id="export-csv" class="ghost" type="button">Export CSV</button>
         <button id="export-m3u" class="ghost" type="button">Export M3U</button>
       </div>
+
+      <div class="mood-bar">
+        <span class="mood-label">Mood</span>
+        <span id="mood-chips" class="chips"></span>
+        <button id="mood-edit" class="linkish" type="button">Set mood…</button>
+      </div>
+      <div id="gen-notice" class="notice" hidden></div>
 
       <div id="set-summary" class="set-summary"></div>
 
@@ -92,6 +100,10 @@
       </div>
 
       <ol id="set-list" class="set-list"></ol>
+      <div id="suggest-wrap" class="suggest-wrap" hidden>
+        <button id="suggest-toggle" class="ghost suggest-toggle" type="button" aria-expanded="false">Suggest next track</button>
+        <div id="suggestions" class="suggestions" hidden></div>
+      </div>
       <p id="set-empty" class="set-empty">Add tracks from the library with <b>+</b>, or tick several and use “Add selected to set”. Drag or use ↑ ↓ to reorder.</p>
     </section>
   </main>
@@ -99,10 +111,50 @@
   <footer class="footer">
     BPM, key, danceability and acousticness data provided by
     <a href="https://getsongbpm.com" target="_blank" rel="noopener">GetSongBPM</a>.
+    Tag data from <a href="https://www.last.fm" target="_blank" rel="noopener">Last.fm</a>.
     Track data from Spotify.
   </footer>
 
+  <dialog id="gen-dialog" class="gen-dialog" aria-labelledby="gen-title">
+    <form method="dialog" id="gen-form">
+      <h2 id="gen-title">Generate a setlist</h2>
+      <p class="hint">Pick one or more mood/vibe tags. Tracks matching more of them, more strongly, rank higher.</p>
+
+      <label class="field-label" for="tag-search">Mood / vibe tags</label>
+      <div id="tag-selected" class="chips"></div>
+      <input id="tag-search" type="search" placeholder="Search tags… (number = tracks with that tag)" autocomplete="off">
+      <div id="tag-options" class="tag-options" role="listbox" aria-label="Available tags"></div>
+      <p id="pool-preview" class="pool-preview"></p>
+
+      <div class="gen-row">
+        <div>
+          <span class="field-label">Length</span>
+          <div class="gen-length">
+            <input id="gen-length" type="number" min="1" max="1000" value="20" aria-label="Length">
+            <select id="gen-length-unit" aria-label="Length unit">
+              <option value="count">tracks</option>
+              <option value="minutes">minutes</option>
+            </select>
+          </div>
+        </div>
+        <div>
+          <span class="field-label">Energy arc</span>
+          <div id="gen-shape" class="seg" role="radiogroup" aria-label="Energy arc shape"></div>
+        </div>
+      </div>
+      <p class="hint">Energy is GetSongBPM’s danceability. Tracks without BPM/key/energy data can still be picked, but score as uncertain transitions.</p>
+
+      <div class="gen-actions">
+        <button type="button" id="gen-cancel" class="ghost">Cancel</button>
+        <span class="spacer"></span>
+        <button type="button" id="gen-mood-only" class="ghost" title="Use these tags to filter “Suggest next track”, without generating">Use as mood filter only</button>
+        <button type="submit" id="gen-go">Generate draft</button>
+      </div>
+    </form>
+  </dialog>
+
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/static/scoring.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>
