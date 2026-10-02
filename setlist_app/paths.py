@@ -15,5 +15,9 @@ DATA_DIR = Path(os.environ.get("SETLIST_DATA_DIR") or PROJECT_DIR / "data")
 BPM_CACHE_PATH = DATA_DIR / "bpm_cache.json"
 UNMATCHED_PATH = DATA_DIR / "unmatched.json"
 LASTFM_CACHE_PATH = DATA_DIR / "lastfm_tag_cache.json"
+FEATURES_CACHE_PATH = DATA_DIR / "features_cache.json"
+GENRE_CACHE_PATH = DATA_DIR / "genre_cache.json"
+# Hand-edited: words to force to "style" or "vibe" when the automatic split is wrong.
+TAXONOMY_OVERRIDES_PATH = DATA_DIR / "taxonomy_overrides.json"
 ENRICHED_LIBRARY_PATH = DATA_DIR / "library_enriched.json"
 SETLISTS_PATH = DATA_DIR / "setlists.json"

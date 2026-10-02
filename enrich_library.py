@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Enrich the exported Liked Songs library with BPM, key, danceability and
-acousticness (GetSongBPM) and mood/genre tags (Last.fm, see tag_enrichment.py),
-and write data/library_enriched.json.
+"""Enrich the exported Liked Songs library and write data/library_enriched.json:
+
+  bpm       BPM, key, danceability, acousticness   GetSongBPM (needs a key)
+  tags      mood/genre tags                         Last.fm (needs a key), tag_enrichment.py
+  features  energy, valence, tempo, ...             ReccoBeats (no key), feature_enrichment.py
+  genres    multi-genre profile                     Deezer + MusicBrainz (no key), genre_enrichment.py
 
 Usage:
-    python enrich_library.py                   # both steps, everything not cached yet
-    python enrich_library.py --only tags       # just the Last.fm tag step (or --only bpm)
+    python enrich_library.py                   # all steps, everything not cached yet
+    python enrich_library.py --only features   # one step: bpm, tags, features or genres
     python enrich_library.py --limit 25        # try a few first to check match quality
     python enrich_library.py --retry-unmatched # also retry tracks not found before
     python enrich_library.py --no-fetch        # just rebuild library_enriched.json from the caches
@@ -45,8 +48,11 @@ from setlist_app.paths import (
     BPM_CACHE_PATH,
     ENRICHED_LIBRARY_PATH,
     ENV_PATH,
+    FEATURES_CACHE_PATH,
+    GENRE_CACHE_PATH,
     LASTFM_CACHE_PATH,
     LIKED_SONGS_PATH,
+    TAXONOMY_OVERRIDES_PATH,
     UNMATCHED_PATH,
 )
 
@@ -451,15 +457,26 @@ def build_sources(api_key: str, limiter: RateLimiter) -> list:
 # --------------------------------------------------------------------------- #
 
 def build_enriched_library(library: dict, cache: dict, unmatched: dict, source_path: Path,
-                           lastfm_cache: dict) -> dict:
-    import tag_enrichment  # imported here: tag_enrichment itself imports from this module
+                           lastfm_cache: dict, feature_cache: dict, genre_cache: dict) -> dict:
+    # Imported here: these modules import from this one.
+    import feature_enrichment
+    import genre_enrichment
+    import tag_enrichment
+    from setlist_app import taxonomy as taxonomy_module
 
     tag_results = tag_enrichment.tags_for_library(library["tracks"], lastfm_cache)
+    feature_results = feature_enrichment.features_for_library(library["tracks"], feature_cache)
+    genre_results = genre_enrichment.genres_for_library(library["tracks"], genre_cache)
     tag_counts = {"tagged": 0, "no_tags": 0, "pending": 0}
+    feature_counts = {"found": 0, "not_found": 0, "pending": 0}
+    genre_counts = {"genres": 0, "no_genres": 0, "pending": 0}
     tracks = []
     counts = {"enriched": 0, "unmatched": 0, "pending": 0}
-    for track, (tag_status, tags) in zip(library["tracks"], tag_results):
+    for track, (tag_status, tags), (feature_status, features), (genre_status, genres) in zip(
+            library["tracks"], tag_results, feature_results, genre_results):
         tag_counts[tag_status] += 1
+        feature_counts[feature_status] += 1
+        genre_counts[genre_status] += 1
         slim = slim_track(track)
         isrc = slim.get("isrc")
         if isrc in cache:
@@ -473,16 +490,42 @@ def build_enriched_library(library: dict, cache: dict, unmatched: dict, source_p
         # but no source had it, "pending" = not looked up yet (newly liked).
         # tags: cleaned Last.fm tags, strongest first, [{tag, weight 0-100, source}].
         # tag_status: "tagged", "no_tags" (looked up, nothing usable) or "pending".
+        # features: ReccoBeats audio features (tempo, energy, valence, danceability,
+        # acousticness, instrumentalness, speechiness, liveness, loudness, key/camelot),
+        # kept separate from `enrichment` (GetSongBPM) so each source stays attributable.
+        # feature_status: "found", "not_found" or "pending".
+        # genres: merged Deezer + MusicBrainz genres, [{genre, weight 0-100, sources}].
+        # genre_status: "genres", "no_genres" or "pending".
         tracks.append({**slim, "enrichment_status": status, "enrichment": enrichment,
-                       "tag_status": tag_status, "tags": tags})
+                       "tag_status": tag_status, "tags": tags,
+                       "feature_status": feature_status, "features": features,
+                       "genre_status": genre_status, "genres": genres})
+
+    # Step C: one normalised profile per song (styles, vibes, families), and the
+    # library-wide hierarchy. Built from the tags + genres above, so it always
+    # reflects whatever has been fetched so far.
+    overrides, overrides_error = taxonomy_module.load_overrides(TAXONOMY_OVERRIDES_PATH)
+    if overrides_error:
+        print(f"Warning: ignoring {overrides_error}", file=sys.stderr)
+    taxonomy, profiles = taxonomy_module.build(
+        tracks, genre_enrichment.official_genre_names(genre_cache), overrides, overrides_error)
+    profile_counts = {"profiled": 0, "no_data": 0, "pending": 0}
+    for track, profile in zip(tracks, profiles):
+        track["profile"] = profile  # {status, complete, styles, vibes, families, primary_style, primary_family}
+        profile_counts[profile["status"]] += 1
     return {
         "generated_at": now_iso(),
         "source_file": str(source_path),
         "source_exported_at": library.get("exported_at"),
-        "attribution": f"{GETSONGBPM_ATTRIBUTION}; tag data from Last.fm (https://www.last.fm)",
+        "attribution": (f"{GETSONGBPM_ATTRIBUTION}; tag data from Last.fm (https://www.last.fm); "
+                        "audio features from ReccoBeats; genres from Deezer and MusicBrainz"),
         "track_count": len(tracks),
         "status_counts": counts,
         "tag_status_counts": tag_counts,
+        "feature_status_counts": feature_counts,
+        "genre_status_counts": genre_counts,
+        "profile_status_counts": profile_counts,
+        "taxonomy": taxonomy,
         "tracks": tracks,
     }
 
@@ -495,8 +538,10 @@ def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--input", type=Path, default=LIKED_SONGS_PATH,
                         help=f"Liked Songs export to read (default: {LIKED_SONGS_PATH})")
-    parser.add_argument("--only", choices=("bpm", "tags"), default=None,
-                        help="Run just one step: 'bpm' (GetSongBPM) or 'tags' (Last.fm). Default: both.")
+    parser.add_argument("--only", choices=("bpm", "tags", "features", "genres"), default=None,
+                        help="Run just one step: 'bpm' (GetSongBPM), 'tags' (Last.fm), 'features' "
+                             "(ReccoBeats) or 'genres' (Deezer + MusicBrainz). Default: all four. "
+                             "The genres step takes about an hour the first time (MusicBrainz's 1 request/second).")
     parser.add_argument("--limit", type=int, default=None,
                         help="Look up at most N uncached tracks per step this run (useful for a first test).")
     parser.add_argument("--retry-unmatched", action="store_true",
@@ -538,9 +583,15 @@ def main(argv=None) -> int:
     if missing_isrc:
         print(f"{missing_isrc} tracks have no ISRC and will show as 'no data'.")
 
+    import feature_enrichment
+    import genre_enrichment
     import tag_enrichment
 
     lastfm_cache = load_json(LASTFM_CACHE_PATH, tag_enrichment.empty_cache())
+    feature_cache = feature_enrichment.normalize_cache(
+        load_json(FEATURES_CACHE_PATH, feature_enrichment.empty_cache()))
+    genre_cache = genre_enrichment.normalize_cache(
+        load_json(GENRE_CACHE_PATH, genre_enrichment.empty_cache()))
     stopped_early: str | None = None
     missing_key = False
 
@@ -568,11 +619,25 @@ def main(argv=None) -> int:
             missing_key = True
             print("Skipping tags: LASTFM_API_KEY is not set in .env (see README.md).", file=sys.stderr)
 
-    enriched = build_enriched_library(library, cache, unmatched, args.input, lastfm_cache)
+    # Steps 3 and 4 need no API keys.
+    if args.only in (None, "features") and not args.no_fetch and not stopped_early:
+        print("\n== Audio features (ReccoBeats) ==")
+        stopped_early = feature_enrichment.run_feature_lookups(
+            library["tracks"], feature_cache, args.limit, args.retry_unmatched)
+
+    if args.only in (None, "genres") and not args.no_fetch and not stopped_early:
+        print("\n== Genres (Deezer + MusicBrainz) ==")
+        stopped_early = genre_enrichment.run_genre_lookups(
+            library["tracks"], genre_cache, args.limit, args.retry_unmatched)
+
+    enriched = build_enriched_library(library, cache, unmatched, args.input, lastfm_cache,
+                                      feature_cache, genre_cache)
     save_json(ENRICHED_LIBRARY_PATH, enriched)
 
     counts = enriched["status_counts"]
     tag_counts = enriched["tag_status_counts"]
+    feature_counts = enriched["feature_status_counts"]
+    genre_counts = enriched["genre_status_counts"]
     unique_enriched = sum(1 for isrc in by_isrc if isrc in cache)
     print()
     print("Enrichment summary")
@@ -581,9 +646,23 @@ def main(argv=None) -> int:
           f"{counts['unmatched']} no match, {counts['pending']} not looked up yet")
     print(f"  Library tracks (tags):      {tag_counts['tagged']} tagged, "
           f"{tag_counts['no_tags']} no usable tags, {tag_counts['pending']} not looked up yet")
+    print(f"  Library tracks (features):  {feature_counts['found']} with audio features, "
+          f"{feature_counts['not_found']} not on ReccoBeats, {feature_counts['pending']} not looked up yet")
+    print(f"  Library tracks (genres):    {genre_counts['genres']} with genres, "
+          f"{genre_counts['no_genres']} none found, {genre_counts['pending']} not looked up yet")
+    taxonomy = enriched["taxonomy"]
+    print(f"  Taxonomy:                   {len(taxonomy['styles'])} styles in {len(taxonomy['families'])} families "
+          f"({', '.join(f['family'] for f in taxonomy['families'][:6])}...), {len(taxonomy['vibes'])} vibe words; "
+          f"{enriched['profile_status_counts']['profiled']} songs profiled")
+    forced = taxonomy["overrides"]
+    if forced["styles"]["listed"] or forced["vibes"]["listed"]:
+        missing = forced["styles"]["not_in_library"] + forced["vibes"]["not_in_library"]
+        print(f"  Taxonomy overrides:         {forced['styles']['applied']} style, {forced['vibes']['applied']} vibe "
+              f"(from {TAXONOMY_OVERRIDES_PATH.name})" + (f"; not in your library: {missing}" if missing else ""))
     print(f"  Enriched library:           {ENRICHED_LIBRARY_PATH}")
     print(f"  Caches:                     {BPM_CACHE_PATH.name}, {UNMATCHED_PATH.name}, "
-          f"{LASTFM_CACHE_PATH.name} (in {BPM_CACHE_PATH.parent})")
+          f"{LASTFM_CACHE_PATH.name}, {FEATURES_CACHE_PATH.name}, {GENRE_CACHE_PATH.name} "
+          f"(in {BPM_CACHE_PATH.parent})")
     # Asking for one step explicitly without its key is an error; otherwise a
     # missing key just skips that step.
     if missing_key and args.only:
