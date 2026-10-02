@@ -95,7 +95,8 @@ const state = {
 };
 
 function blankSet() {
-  return { id: null, name: "", trackIds: [], snapshots: {}, mood: [], arc: null };
+  // spotify: the playlist this set was last exported to ({id, url, exportedAt, updatedAt}).
+  return { id: null, name: "", trackIds: [], snapshots: {}, mood: [], arc: null, spotify: null };
 }
 
 const fingerprintOf = (name, trackIds, mood) => JSON.stringify({ name: name.trim(), trackIds, mood: mood || [] });
@@ -485,7 +486,73 @@ function renderSetStatus() {
     ? (state.set.trackIds.length ? "Not saved yet" : "New setlist")
     : dirty ? "Unsaved changes" : "Saved";
   $("set-delete").disabled = !state.set.id;
-  $("export-csv").disabled = $("export-m3u").disabled = !state.set.trackIds.length;
+  $("export-csv").disabled = $("export-m3u").disabled = $("export-spotify").disabled = !state.set.trackIds.length;
+  renderSpotifyRow();
+}
+
+function renderSpotifyRow() {
+  const sp = state.set.spotify;
+  $("export-spotify").textContent = sp ? "Update on Spotify" : "Export to Spotify";
+  $("export-spotify").title = sp
+    ? "Replace the tracks, name and description of the linked Spotify playlist with this set"
+    : "Create a private playlist in your Spotify account";
+  const row = $("spotify-row");
+  row.hidden = !sp;
+  if (!sp) return;
+  // Saved after the last export, or edited since: the playlist is behind.
+  const stale = isDirty() || (sp.updatedAt && sp.exportedAt && sp.updatedAt > sp.exportedAt);
+  row.innerHTML = `On Spotify: <a href="${esc(sp.url)}" target="_blank" rel="noopener">open playlist ↗</a>` +
+    (sp.exportedAt ? ` · exported ${esc(new Date(sp.exportedAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }))}` : "") +
+    (stale ? ' · <span class="stale">changed since</span>' : "") +
+    ' · <button type="button" class="linkish" id="spotify-as-new">export as new playlist</button>';
+}
+
+// ---- Export to Spotify ----
+
+let spotifyBusy = false;
+
+async function ensureSpotifyConnected() {
+  let st = await api("/api/spotify/status");
+  if (!st.configured) throw new Error(st.message);
+  if (st.connected) return st;
+  st = await api("/api/spotify/connect", { method: "POST" });
+  toast("Log in to Spotify in the browser tab that opened, then come back here…");
+  $("export-spotify").textContent = "Waiting for Spotify login…";
+  const deadline = Date.now() + 3 * 60 * 1000;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 2000));
+    st = await api("/api/spotify/status");
+    if (st.connected) return st;
+    if (st.error) throw new Error(st.error);
+  }
+  throw new Error("Timed out waiting for the Spotify login. Click Export to Spotify to try again.");
+}
+
+async function exportToSpotify(asNew = false) {
+  if (spotifyBusy) return;
+  spotifyBusy = true;
+  $("export-spotify").disabled = true;
+  try {
+    if ((isDirty() || !state.set.id) && !(await saveSet())) return;
+    const st = await ensureSpotifyConnected();
+    $("export-spotify").textContent = "Exporting…";
+    const { result, setlist } = await api(`/api/setlists/${state.set.id}/spotify`, {
+      method: "POST",
+      body: JSON.stringify({ as_new: asNew }),
+    });
+    state.set.spotify = {
+      id: setlist.spotify_playlist_id, url: setlist.spotify_playlist_url,
+      exportedAt: setlist.spotify_exported_at, updatedAt: setlist.updated_at,
+    };
+    storage("set", "setlist-draft", state.set);
+    const verb = result.created ? "Created" : "Updated";
+    toast(`${verb} “${state.set.name}” on Spotify (${result.track_count} tracks${st.user ? `, ${st.user}` : ""})`);
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    spotifyBusy = false;
+    renderSetStatus();
+  }
 }
 
 function renderSavedList() {
@@ -517,6 +584,9 @@ function loadIntoEditor(setlist) {
     snapshots: Object.fromEntries(setlist.tracks.map((t) => [t.track_id, t])),
     mood: setlist.mood_tags || [],
     arc: null,
+    spotify: setlist.spotify_playlist_id
+      ? { id: setlist.spotify_playlist_id, url: setlist.spotify_playlist_url, exportedAt: setlist.spotify_exported_at, updatedAt: setlist.updated_at }
+      : null,
   };
   state.savedFingerprint = fingerprint();
   setChanged();
@@ -717,6 +787,10 @@ function bindEvents() {
 
   $("export-csv").addEventListener("click", () => exportSet("csv"));
   $("export-m3u").addEventListener("click", () => exportSet("m3u"));
+  $("export-spotify").addEventListener("click", () => exportToSpotify(false));
+  $("spotify-row").addEventListener("click", (e) => {
+    if (e.target.id === "spotify-as-new") exportToSpotify(true);
+  });
 
   document.querySelectorAll(".arc .seg button").forEach((btn) => btn.addEventListener("click", () => {
     state.arcMetric = btn.dataset.metric;
@@ -951,6 +1025,9 @@ async function init() {
       snapshots: draft.snapshots || {},
       mood: Array.isArray(draft.mood) ? draft.mood : [],
       arc: draft.arc || null,
+      spotify: saved?.spotify_playlist_id
+        ? { id: saved.spotify_playlist_id, url: saved.spotify_playlist_url, exportedAt: saved.spotify_exported_at, updatedAt: saved.updated_at }
+        : null,
     };
     state.savedFingerprint = saved
       ? fingerprintOf(saved.name, saved.tracks.map((t) => t.track_id), saved.mood_tags)

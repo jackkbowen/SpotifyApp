@@ -348,3 +348,10 @@ button.linkish:hover { text-decoration: underline; }
   .layout { grid-template-columns: 1fr; }
   .table-wrap { max-height: 60vh; }
 }
+
+/* ---- Spotify export ---- */
+button.spotify { background: #1db954; border-color: #1db954; color: #0b0b0b; font-weight: 600; }
+button.spotify:disabled { opacity: .45; }
+.spotify-row { font-size: 12px; color: var(--muted); }
+.spotify-row a { color: var(--good); }
+.spotify-row .stale { color: var(--ok); }

@@ -1,6 +1,7 @@
 # Secrets and credentials
 .env
 .spotify_token_cache
+.spotify_playlist_token_cache
 
 # Exported data
 output/

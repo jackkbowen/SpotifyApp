@@ -7,7 +7,7 @@ from pathlib import Path
 
 from flask import Flask, Response, jsonify, request, send_from_directory
 
-from . import setlists
+from . import setlists, spotify_export
 from .library import LibraryMissingError, load_enriched_library, staleness_warnings
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -93,6 +93,42 @@ def update_setlist(setlist_id):
 def delete_setlist(setlist_id):
     setlists.delete_setlist(setlist_id)
     return "", 204
+
+
+@app.errorhandler(spotify_export.SpotifyNotConnected)
+def _spotify_not_connected(error):
+    return jsonify(error="spotify_not_connected", message="Connect your Spotify account first."), 409
+
+
+@app.errorhandler(spotify_export.SpotifyExportError)
+def _spotify_failed(error):
+    return jsonify(error="spotify_error", message=str(error)), 502
+
+
+@app.get("/api/spotify/status")
+def spotify_status():
+    return jsonify(spotify_export.status())
+
+
+@app.post("/api/spotify/connect")
+def spotify_connect():
+    spotify_export.start_login()
+    return jsonify(spotify_export.status())
+
+
+@app.post("/api/spotify/disconnect")
+def spotify_disconnect():
+    spotify_export.disconnect()
+    return jsonify(spotify_export.status())
+
+
+@app.post("/api/setlists/<setlist_id>/spotify")
+def export_to_spotify(setlist_id):
+    body = request.get_json(silent=True) or {}
+    setlist = setlists.get_setlist(setlist_id)
+    result = spotify_export.export_setlist(setlist, as_new=bool(body.get("as_new")))
+    updated = setlists.record_spotify_export(setlist_id, result["playlist_id"], result["url"])
+    return jsonify(result=result, setlist=updated)
 
 
 @app.get("/api/setlists/<setlist_id>/export")

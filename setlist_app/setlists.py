@@ -117,6 +117,21 @@ def save_setlist(name: str, track_ids: list[str], tracks_by_id: dict[str, dict],
     return setlist
 
 
+def record_spotify_export(setlist_id: str, playlist_id: str, url: str | None,
+                          path: Path = SETLISTS_PATH) -> dict:
+    """Remember which Spotify playlist a setlist was exported to, so the next
+    export can update it in place."""
+    with _lock:
+        data = _read(path)
+        setlist = data["setlists"].get(setlist_id)
+        if not setlist:
+            raise SetlistNotFound(setlist_id)
+        setlist.update(spotify_playlist_id=playlist_id, spotify_playlist_url=url,
+                       spotify_exported_at=_now())
+        _write(path, data)
+    return setlist
+
+
 def delete_setlist(setlist_id: str, path: Path = SETLISTS_PATH) -> None:
     with _lock:
         data = _read(path)

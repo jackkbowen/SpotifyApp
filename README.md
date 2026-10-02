@@ -225,7 +225,8 @@ If `data/library_enriched.json` doesn't exist yet, the page tells you to run the
 | Path | What | Written by |
 | --- | --- | --- |
 | `.env` | Spotify, GetSongBPM and Last.fm credentials | you |
-| `.spotify_token_cache` | Cached Spotify login | `export_liked_songs.py` |
+| `.spotify_token_cache` | Cached Spotify login (read-only) | `export_liked_songs.py` |
+| `.spotify_playlist_token_cache` | Cached Spotify login for creating playlists | the app |
 | `output/liked_songs.json`, `.csv` | Raw Liked Songs export | `export_liked_songs.py` |
 | `data/bpm_cache.json` | Every successful lookup, keyed by ISRC, plus recent request times for the hourly limit | `enrich_library.py` |
 | `data/unmatched.json` | ISRCs with no match, with track name/artists for reference | `enrich_library.py` |
@@ -324,3 +325,19 @@ With at least one track in the set, click **Suggest next track** under the list.
 Click **+** to append one; the list then refreshes for the new last track.
 
 If a mood is active (from a generated draft, or **Set mood…**), suggestions only come from tracks with at least one of those tags, weighted by how strongly they match. Remove the mood chips to search the whole library. A setlist's mood is saved with it.
+
+---
+
+# Export a setlist to Spotify
+
+Click **Export to Spotify** in the setlist panel. It saves the set first if needed, then creates a **private** playlist in your Spotify account with the same name and track order.
+
+- **First time:** a browser tab opens asking you to let the app **"create and edit your private playlists"** (`playlist-modify-private`). This is a separate login from the read-only one the export script uses, so neither disturbs the other. It's cached in `.spotify_playlist_token_cache`. The login is caught on the same `http://127.0.0.1:8888/callback` redirect URI you registered in phase 1, so the dashboard needs no changes. The page waits up to 3 minutes for you to finish.
+- **Afterwards** the button becomes **Update on Spotify**. It updates the same playlist in place, replacing its tracks, name and description with the current set. The panel links to the playlist and shows "changed since" when the set has been edited after the last export. Use **export as new playlist** to make a separate copy, e.g. if you deleted the original in Spotify.
+- **Description:** the playlist description lists the set's mood tags and credits getsongbpm.com and last.fm. GetSongBPM requires a backlink wherever its data is shared, and a playlist counts.
+- **Large sets** are handled: tracks are sent in batches of 100, Spotify's per-request limit.
+- **Tracks you've since unliked** are still exported. They're still Spotify tracks, just no longer in your library.
+
+To revoke access, delete `.spotify_playlist_token_cache`, or remove the app under *Manage apps* in your Spotify account settings.
+
+If Spotify answers **403**, the usual Development Mode causes apply: your account must be listed under **User Management** in the Developer Dashboard, and the app owner needs Premium.
