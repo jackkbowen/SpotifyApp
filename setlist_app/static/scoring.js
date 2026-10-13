@@ -66,34 +66,64 @@ function bpmRelation(fromBpm, toBpm) {
 // Mood tags
 // ---------------------------------------------------------------------------
 
-// Tag weights are Last.fm's 0-100 relevance (artist-level tags at half).
-// A track "has" a tag for mood purposes from this weight up.
+// Weights are 0-100 relevance. A track "has" a word for mood purposes from
+// this weight up.
 const MIN_TAG_WEIGHT = 10;
 
-const trackTags = (t) => t.tags || [];
+// Spelling-insensitive identity, so "hyper pop", "Hyperpop" and "hyper-pop"
+// are one mood (and moods saved with older setlists still match).
+const tagKey = (s) => String(s || "").toLowerCase().replace(/&/g, " and ").replace(/[^a-z0-9]+/g, "");
 
-// The mood vocabulary is whatever tags exist in this library, with how many
+// A song's mood words: its merged genre profile (styles + vibes, built from
+// Last.fm, Deezer and MusicBrainz by setlist_app/taxonomy.py) plus its raw
+// Last.fm tags, keeping the strongest weight per word. {key: {tag, weight}}.
+const moodWordCache = new WeakMap();
+function moodWords(t) {
+  if (t && typeof t === "object" && moodWordCache.has(t)) return moodWordCache.get(t);
+  const words = new Map();
+  const add = (tag, weight) => {
+    const key = tagKey(tag);
+    if (!key) return;
+    const current = words.get(key);
+    if (!current) words.set(key, { tag, weight });
+    else if (weight > current.weight) current.weight = weight;  // keep the profile's spelling
+  };
+  for (const s of t?.profile?.styles || []) add(s.style, s.weight);
+  for (const v of t?.profile?.vibes || []) add(v.vibe, v.weight);
+  for (const x of t?.tags || []) add(x.tag, x.weight);
+  if (t && typeof t === "object") moodWordCache.set(t, words);
+  return words;
+}
+const trackTags = (t) => [...moodWords(t).values()];
+
+// The mood vocabulary is whatever words exist in this library, with how many
 // tracks carry each one. Nothing is hardcoded.
 function tagVocabulary(tracks) {
-  const counts = new Map();
+  const counts = new Map();  // key -> {count, spellings}
   for (const t of tracks) {
-    for (const { tag, weight } of trackTags(t)) {
-      if (weight >= MIN_TAG_WEIGHT) counts.set(tag, (counts.get(tag) || 0) + 1);
+    for (const [key, { tag, weight }] of moodWords(t)) {
+      if (weight < MIN_TAG_WEIGHT) continue;
+      const entry = counts.get(key) || { count: 0, spellings: new Map() };
+      entry.count++;
+      entry.spellings.set(tag, (entry.spellings.get(tag) || 0) + 1);
+      counts.set(key, entry);
     }
   }
-  return [...counts].map(([tag, count]) => ({ tag, count }))
+  return [...counts.values()]
+    .map(({ count, spellings }) => ({ tag: [...spellings].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))[0][0], count }))
     .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag));
 }
 
-// 0-1: the average of the track's weight for each selected tag (0 where it
-// lacks one). Matching all selected tags strongly scores highest, but
+// 0-1: the average of the track's weight for each selected word (0 where it
+// lacks one). Matching all selected words strongly scores highest, but
 // matching only some still counts: overlap is weighted, not required.
 function moodRelevance(track, selected) {
   if (!selected.length) return { score: 1, matched: [] };
-  const byTag = new Map(trackTags(track).map((t) => [t.tag, t.weight]));
-  const matched = selected.filter((tag) => (byTag.get(tag) || 0) >= MIN_TAG_WEIGHT)
-    .map((tag) => ({ tag, weight: byTag.get(tag) }));
-  const score = selected.reduce((sum, tag) => sum + Math.min(byTag.get(tag) || 0, 100), 0) / (100 * selected.length);
+  const words = moodWords(track);
+  const weightOf = (tag) => words.get(tagKey(tag))?.weight || 0;
+  const matched = selected.filter((tag) => weightOf(tag) >= MIN_TAG_WEIGHT)
+    .map((tag) => ({ tag, weight: weightOf(tag) }));
+  const score = selected.reduce((sum, tag) => sum + Math.min(weightOf(tag), 100), 0) / (100 * selected.length);
   return { score, matched };
 }
 
@@ -101,6 +131,103 @@ function moodPool(tracks, selected) {
   return tracks
     .map((track) => ({ track, ...moodRelevance(track, selected) }))
     .filter((c) => c.matched.length > 0);
+}
+
+// ---------------------------------------------------------------------------
+// Genre similarity
+//
+// Each song's `profile` (merged Last.fm + Deezer + MusicBrainz, see
+// setlist_app/taxonomy.py) has weighted styles and weighted families. Two songs
+// are compared by the cosine of their style vectors and of their family
+// vectors, blended: the style part rewards exact matches ("riddim" + "riddim"),
+// the family part gives partial credit to related styles ("riddim" vs
+// "brostep" share the dance/electro families). Each word is IDF-weighted over
+// the library, so a word on half of all songs ("dance") counts far less than a
+// rare one. `vibes` (places, eras) are deliberately ignored.
+// ---------------------------------------------------------------------------
+
+const GENRE_MIN_WEIGHT = 10;   // ignore very weak styles/families
+const STYLE_SHARE = 0.6;       // style cosine vs family cosine in the blend
+
+let genreIdf = { style: new Map(), family: new Map() };
+let genreVectors = new WeakMap();
+
+// Call once after the library loads (and again if it changes).
+function buildGenreModel(tracks) {
+  const df = { style: new Map(), family: new Map() };
+  let n = 0;
+  const count = (map, name) => map.set(name, (map.get(name) || 0) + 1);
+  for (const t of tracks) {
+    const styles = (t.profile?.styles || []).filter((s) => s.weight >= GENRE_MIN_WEIGHT);
+    const families = (t.profile?.families || []).filter((f) => f.weight >= GENRE_MIN_WEIGHT);
+    if (!styles.length && !families.length) continue;
+    n++;
+    styles.forEach((s) => count(df.style, s.style));
+    families.forEach((f) => count(df.family, f.family));
+  }
+  const idf = (map) => new Map([...map].map(([name, c]) => [name, Math.log((n + 1) / (c + 1)) + 1]));
+  genreIdf = { style: idf(df.style), family: idf(df.family) };
+  genreVectors = new WeakMap();
+}
+
+function weightedVector(items, nameKey, idf) {
+  const v = new Map();
+  let sumSquares = 0;
+  for (const item of items || []) {
+    if (item.weight < GENRE_MIN_WEIGHT) continue;
+    const x = (item.weight / 100) * (idf.get(item[nameKey]) ?? 1);
+    v.set(item[nameKey], x);
+    sumSquares += x * x;
+  }
+  return sumSquares ? { v, norm: Math.sqrt(sumSquares) } : null;
+}
+
+function genreVector(track) {
+  if (!track || typeof track !== "object") return null;
+  if (genreVectors.has(track)) return genreVectors.get(track);
+  const p = track.profile;
+  const vec = p && {
+    styles: weightedVector(p.styles, "style", genreIdf.style),
+    families: weightedVector(p.families, "family", genreIdf.family),
+  };
+  const result = vec && (vec.styles || vec.families) ? vec : null;
+  genreVectors.set(track, result);
+  return result;
+}
+
+function cosine(a, b) {
+  if (!a || !b) return null;
+  const [small, large] = a.v.size <= b.v.size ? [a, b] : [b, a];
+  let dot = 0;
+  for (const [name, x] of small.v) {
+    const y = large.v.get(name);
+    if (y) dot += x * y;
+  }
+  return dot / (a.norm * b.norm);
+}
+
+function sharedNames(a, b) {
+  if (!a || !b) return [];
+  const shared = [];
+  for (const [name, x] of a.v) {
+    const y = b.v.get(name);
+    if (y) shared.push([name, Math.min(x, y)]);
+  }
+  return shared.sort((p, q) => q[1] - p[1] || (p[0] < q[0] ? -1 : 1)).map(([name]) => name);
+}
+
+// null when either song has no genre profile yet.
+function genreSimilarity(a, b) {
+  const va = genreVector(a), vb = genreVector(b);
+  if (!va || !vb) return null;
+  const style = cosine(va.styles, vb.styles), family = cosine(va.families, vb.families);
+  const similarity = style != null && family != null ? STYLE_SHARE * style + (1 - STYLE_SHARE) * family : style ?? family;
+  if (similarity == null) return null;
+  return {
+    similarity, style, family,
+    shared: sharedNames(va.styles, vb.styles).slice(0, 3),
+    sharedFamilies: sharedNames(va.families, vb.families).slice(0, 2),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -112,14 +239,24 @@ function moodPool(tracks, selected) {
 // a good transition, but it isn't a known clash either.
 // ---------------------------------------------------------------------------
 
-const WEIGHTS = { bpm: 0.35, key: 0.3, energy: 0.2, mood: 0.15 };
-const UNKNOWN_COST = { bpm: 0.6, key: 0.6, energy: 0.5 };
+const WEIGHTS = { bpm: 0.30, key: 0.25, energy: 0.15, genre: 0.20, valence: 0.10, mood: 0.15 };
+const UNKNOWN_COST = { bpm: 0.6, key: 0.6, energy: 0.5, genre: 0.5, valence: 0.5 };
 const BPM_PCT_AT_MAX_COST = 8;     // ≥8% tempo change counts as a hard jump
-const ENERGY_AT_MAX_COST = 40;     // danceability points
+const ENERGY_AT_MAX_COST = 40;     // energy points (0-100)
+const VALENCE_AT_MAX_COST = 40;    // valence points (0-100, sad -> happy)
 
-const energyOf = (t) => t?.enrichment?.danceability ?? null;
-const bpmOf = (t) => t?.enrichment?.bpm ?? null;
-const camelotOf = (t) => t?.enrichment?.camelot ?? null;
+// ReccoBeats energy (0-100). Deliberately no fallback to GetSongBPM's danceability:
+// it's a different measure on a different scale, so mixing them would distort comparisons.
+const energyOf = (t) => t?.features?.energy ?? null;
+// Tempo and key: GetSongBPM where it has the song, else ReccoBeats. They agree
+// on 96% of tempos (allowing half/double time) and 90% of keys where both
+// exist, and the fallback lifts tempo+key coverage from ~19% to ~74%.
+const bpmOf = (t) => t?.enrichment?.bpm || t?.features?.tempo || null;
+const camelotOf = (t) => t?.enrichment?.camelot || t?.features?.camelot || null;
+const keyNameOf = (t) => (t?.enrichment?.camelot ? t.enrichment.key : t?.features?.key) || null;
+const bpmSource = (t) => (t?.enrichment?.bpm ? "GetSongBPM" : t?.features?.tempo ? "ReccoBeats" : null);
+const keySource = (t) => (t?.enrichment?.camelot ? "GetSongBPM" : t?.features?.camelot ? "ReccoBeats" : null);
+const valenceOf = (t) => t?.features?.valence ?? null;   // ReccoBeats
 
 const KEY_COSTS = { "same key": 0, "+1": 0.1, "−1": 0.1, relative: 0.15, clash: 1 };
 
@@ -139,6 +276,12 @@ function transition(prev, cand, { target = null, moodScore = null } = {}) {
   else if (target != null) parts.energy = Math.min(Math.abs(eCand - target) / ENERGY_AT_MAX_COST, 1);
   else if (ePrev != null) parts.energy = Math.min(Math.abs(eCand - ePrev) / ENERGY_AT_MAX_COST, 1);
   else parts.energy = UNKNOWN_COST.energy;
+  const genre = genreSimilarity(prev, cand);
+  parts.genre = genre ? 1 - genre.similarity : UNKNOWN_COST.genre;
+  const vPrev = valenceOf(prev), vCand = valenceOf(cand);
+  parts.valence = vPrev != null && vCand != null
+    ? Math.min(Math.abs(vCand - vPrev) / VALENCE_AT_MAX_COST, 1)
+    : UNKNOWN_COST.valence;
   if (moodScore != null) parts.mood = 1 - moodScore;
 
   let total = 0, weightSum = 0;
@@ -152,6 +295,8 @@ function transition(prev, cand, { target = null, moodScore = null } = {}) {
     bpm,
     key,
     energyDelta: ePrev != null && eCand != null ? eCand - ePrev : null,
+    valenceDelta: vPrev != null && vCand != null ? vCand - vPrev : null,
+    genre,
     target,
   };
 }
@@ -174,7 +319,7 @@ function percentile(sorted, p) {
 }
 
 // Low/high energy for this pool, so arcs use the range the mood actually has
-// (a "chill" pool and a "riddim" pool have very different danceability).
+// (a "chill" pool and a "riddim" pool have very different energy).
 function energyRange(tracks) {
   const values = tracks.map(energyOf).filter((v) => v != null).sort((a, b) => a - b);
   if (values.length < 3) return null;
@@ -220,6 +365,17 @@ function generateSetlist(tracks, { tags, shape = "free", count = null, minutes =
   let elapsedMs = 0;
   const remaining = new Set(pool.map((_, i) => i));
   const done = () => (targetCount ? chosen.length >= targetCount : elapsedMs >= targetMs);
+  // Different releases of the same recording share an ISRC. An identical copy
+  // looks like a perfect transition, so without this the greedy step would
+  // happily play the same song twice in a row.
+  const take = (i, step) => {
+    const c = pool[i];
+    chosen.push(c);
+    steps.push(step);
+    elapsedMs += c.track.duration_ms || 0;
+    remaining.delete(i);
+    if (c.track.isrc) for (const j of [...remaining]) if (pool[j].track.isrc === c.track.isrc) remaining.delete(j);
+  };
 
   // Opening track: best mood fit near the arc's starting energy, preferring
   // tracks with known BPM/key so the first transitions can be judged.
@@ -234,10 +390,7 @@ function generateSetlist(tracks, { tags, shape = "free", count = null, minutes =
       const cost = WEIGHTS.mood * (1 - c.score) + WEIGHTS.energy * energyCost + 0.3 * dataCost;
       if (!best || cost < best.cost) best = { i, cost, target };
     }
-    remaining.delete(best.i);
-    chosen.push(pool[best.i]);
-    steps.push({ cost: best.cost, target: best.target, opening: true });
-    elapsedMs += pool[best.i].track.duration_ms || 0;
+    take(best.i, { cost: best.cost, target: best.target, opening: true });
   }
 
   while (!done() && remaining.size) {
@@ -249,10 +402,7 @@ function generateSetlist(tracks, { tags, shape = "free", count = null, minutes =
       const t = transition(prev, c.track, { target, moodScore: c.score });
       if (!best || t.cost < best.t.cost) best = { i, t };
     }
-    remaining.delete(best.i);
-    chosen.push(pool[best.i]);
-    steps.push(best.t);
-    elapsedMs += pool[best.i].track.duration_ms || 0;
+    take(best.i, best.t);
   }
 
   const shortfall = !done();
@@ -278,7 +428,11 @@ function suggestNext(tracks, setIds, { tags = [], limit = 12 } = {}) {
   if (!setIds.length) return { suggestions: [], candidates: 0 };
   const inSet = new Set(setIds);
   const last = tracks.find((t) => t.track_id === setIds[setIds.length - 1]);
-  let candidates = tracks.filter((t) => !inSet.has(t.track_id)).map((track) => ({ track, score: null, matched: [] }));
+  // Skip other releases of recordings already in the set (same ISRC).
+  const setIsrcs = new Set(tracks.filter((t) => inSet.has(t.track_id) && t.isrc).map((t) => t.isrc));
+  let candidates = tracks
+    .filter((t) => !inSet.has(t.track_id) && !(t.isrc && setIsrcs.has(t.isrc)))
+    .map((track) => ({ track, score: null, matched: [] }));
   if (tags.length) {
     // With a mood active, only tracks carrying at least one of its tags.
     candidates = candidates.map((c) => ({ ...c, ...moodRelevance(c.track, tags) })).filter((c) => c.matched.length);
@@ -294,5 +448,6 @@ if (typeof module !== "undefined") {
     CAMELOT_KEYS, CAMELOT_NAMES, parseCamelot, keyRelation, compatibleKeys, bpmRelation,
     MIN_TAG_WEIGHT, tagVocabulary, moodRelevance, moodPool,
     WEIGHTS, transition, ARC_SHAPES, energyRange, arcTarget, generateSetlist, suggestNext,
+    buildGenreModel, genreSimilarity, valenceOf, energyOf, bpmOf, camelotOf, bpmSource, keySource, tagKey, trackTags,
   };
 }

@@ -94,7 +94,7 @@
         <div class="arc-head">
           <span>Energy arc</span>
           <div class="seg" role="radiogroup" aria-label="Arc metric">
-            <button type="button" data-metric="danceability" class="active">Danceability</button>
+            <button type="button" data-metric="energy" class="active">Energy</button>
             <button type="button" data-metric="bpm">BPM</button>
           </div>
         </div>
@@ -114,6 +114,8 @@
     BPM, key, danceability and acousticness data provided by
     <a href="https://getsongbpm.com" target="_blank" rel="noopener">GetSongBPM</a>.
     Tag data from <a href="https://www.last.fm" target="_blank" rel="noopener">Last.fm</a>.
+    Audio features (energy, valence, and tempo/key where GetSongBPM has none) from
+    <a href="https://reccobeats.com" target="_blank" rel="noopener">ReccoBeats</a>; genres from Deezer and MusicBrainz.
     Track data from Spotify.
   </footer>
 
@@ -144,7 +146,7 @@
           <div id="gen-shape" class="seg" role="radiogroup" aria-label="Energy arc shape"></div>
         </div>
       </div>
-      <p class="hint">Energy is GetSongBPM’s danceability. Tracks without BPM/key/energy data can still be picked, but score as uncertain transitions.</p>
+      <p class="hint">Energy is ReccoBeats’ energy score (0–100). Tracks without BPM/key/energy data can still be picked, but score as uncertain transitions.</p>
 
       <div class="gen-actions">
         <button type="button" id="gen-cancel" class="ghost">Cancel</button>

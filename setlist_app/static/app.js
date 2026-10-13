@@ -88,7 +88,7 @@ const state = {
   // generated draft (drawn over the energy bars).
   set: blankSet(),
   savedFingerprint: "",
-  arcMetric: "danceability",
+  arcMetric: "energy",
   vocab: [],
   suggestOpen: false,
   gen: { tags: [], shape: "build" },
@@ -293,27 +293,51 @@ function setChanged() {
 }
 
 function bpmPill(a, b) {
-  const ea = enr(a), eb = enr(b);
-  const bpm = bpmRelation(ea.bpm, eb.bpm);
+  const ba = bpmOf(a), bb = bpmOf(b);
+  const bpm = bpmRelation(ba, bb);
   return bpm
-    ? `<span class="pill ${bpm.cls}" title="${fmtBpm(ea.bpm)} → ${fmtBpm(eb.bpm)} BPM${bpm.label ? ` (compared at ${bpm.label} tempo)` : ""}">${signed(bpm.delta)} BPM · ${signed(bpm.pct)}%${bpm.label ? ` · ${bpm.label}` : ""}</span>`
+    ? `<span class="pill ${bpm.cls}" title="${fmtBpm(ba)} → ${fmtBpm(bb)} BPM${bpm.label ? ` (compared at ${bpm.label} tempo)` : ""}${sourceNote(bpmSource(a), bpmSource(b), "tempo")}">${signed(bpm.delta)} BPM · ${signed(bpm.pct)}%${bpm.label ? ` · ${bpm.label}` : ""}</span>`
     : '<span class="pill unknown">BPM ?</span>';
 }
 
 function keyPill(a, b) {
-  const ea = enr(a), eb = enr(b);
-  const key = keyRelation(ea.camelot, eb.camelot);
+  const ca = camelotOf(a), cb = camelotOf(b);
+  const key = keyRelation(ca, cb);
   return key
-    ? `<span class="pill ${key.compatible ? "good" : "bad"}" title="Camelot ${ea.camelot} → ${eb.camelot}">${esc(ea.camelot)} → ${esc(eb.camelot)} · ${key.label}${key.compatible ? " ✓" : ""}</span>`
+    ? `<span class="pill ${key.compatible ? "good" : "bad"}" title="Camelot ${ca} → ${cb}${sourceNote(keySource(a), keySource(b), "key")}">${esc(ca)} → ${esc(cb)} · ${key.label}${key.compatible ? " ✓" : ""}</span>`
     : '<span class="pill unknown">key ?</span>';
 }
 
+// " · tempo from ReccoBeats" when either side used the fallback source.
+function sourceNote(sa, sb, what) {
+  const recco = [sa, sb].filter((s) => s === "ReccoBeats").length;
+  return recco ? ` · ${what} from ReccoBeats for ${recco === 2 ? "both songs" : "one song"}` : "";
+}
+
 function energyPill(a, b) {
-  const da = enr(a).danceability, db = enr(b).danceability;
+  const da = energyOf(a), db = energyOf(b);
   if (da == null || db == null) return '<span class="pill unknown">energy ?</span>';
   const d = db - da, abs = Math.abs(d);
   const cls = abs <= 10 ? "good" : abs <= 25 ? "ok" : "bad";
-  return `<span class="pill ${cls}" title="Danceability ${da} → ${db}">energy ${signed(d, 0)}</span>`;
+  return `<span class="pill ${cls}" title="Energy ${da} → ${db}">energy ${signed(d, 0)}</span>`;
+}
+
+// Valence = musical positivity (0 sad .. 100 happy), from ReccoBeats.
+function valencePill(a, b) {
+  const va = valenceOf(a), vb = valenceOf(b);
+  if (va == null || vb == null) return '<span class="pill unknown">valence ?</span>';
+  const d = vb - va, abs = Math.abs(d);
+  const cls = abs <= 12 ? "good" : abs <= 28 ? "ok" : "bad";
+  return `<span class="pill ${cls}" title="Valence (sad to happy) ${va} → ${vb}">valence ${signed(d, 0)}</span>`;
+}
+
+// Genre similarity from the songs' merged style/family profiles.
+function genrePill(genre) {
+  if (!genre) return '<span class="pill unknown" title="No genre profile for one of the songs yet">genre ?</span>';
+  const pct = Math.round(genre.similarity * 100);
+  const cls = pct >= 60 ? "good" : pct >= 30 ? "ok" : "bad";
+  const detail = genre.shared.length ? genre.shared.join(", ") : genre.sharedFamilies.length ? `family: ${genre.sharedFamilies.join(", ")}` : "no shared genre";
+  return `<span class="pill ${cls}" title="Genre similarity ${pct}% (shared styles weighted by rarity; related styles get partial credit through shared families)">genre ${pct}% · ${esc(detail)}</span>`;
 }
 
 function transitionHtml(a, b) {
@@ -335,8 +359,8 @@ function renderSet() {
       </div>
       <div>
         <div class="meta">
-          <span>${e.bpm ? `${fmtBpm(e.bpm)} BPM` : '<span class="none">— BPM</span>'}</span>
-          ${e.camelot ? `<span class="keybadge" title="${esc(e.key || "")}">${esc(e.camelot)}</span>` : '<span class="keybadge none">—</span>'}
+          <span${bpmSource(t) === "ReccoBeats" ? ' title="Tempo from ReccoBeats"' : ""}>${bpmOf(t) ? `${fmtBpm(bpmOf(t))} BPM` : '<span class="none">— BPM</span>'}</span>
+          ${camelotOf(t) ? `<span class="keybadge" title="${esc(keyNameOf(t) || "")}${keySource(t) === "ReccoBeats" ? " · key from ReccoBeats" : ""}">${esc(camelotOf(t))}</span>` : '<span class="keybadge none">—</span>'}
           <span class="none">${fmtDuration(t.duration_ms)}</span>
         </div>
         <div class="controls">
@@ -385,7 +409,7 @@ function renderSuggestions() {
   const mood = state.set.mood;
   const { suggestions, candidates } = suggestNext(state.tracks, ids, { tags: mood, limit: 12 });
   const scope = mood.length ? `mood: ${mood.map(esc).join(", ")}` : "whole library";
-  const noData = !enr(last).bpm && !enr(last).camelot;
+  const noData = !bpmOf(last) && !camelotOf(last);
   const head = `<div class="sugg-head">After <b>${esc(last.track_name)}</b> · ${scope} · ${candidates} candidates</div>` +
     (noData ? '<p class="hint">This track has no BPM/key data, so suggestions can only weigh energy and mood.</p>' : "");
   if (!suggestions.length) {
@@ -400,11 +424,11 @@ function renderSuggestions() {
     return `<li class="sugg" data-id="${esc(track.track_id)}">
       <div class="sugg-main">
         <div class="title" title="${esc(track.track_name)}">${esc(track.track_name)}</div>
-        <div class="artist">${esc(artistNames(track))}${enr(track).bpm ? ` · ${fmtBpm(enr(track).bpm)} BPM` : ""}${enr(track).camelot ? ` · ${esc(enr(track).camelot)}` : ""}</div>
-        <div class="why">${bpmPill(last, track)}${keyPill(last, track)}${energyPill(last, track)}${moodPill}</div>
+        <div class="artist">${esc(artistNames(track))}${bpmOf(track) ? ` · ${fmtBpm(bpmOf(track))} BPM` : ""}${camelotOf(track) ? ` · ${esc(camelotOf(track))}` : ""}</div>
+        <div class="why">${bpmPill(last, track)}${keyPill(last, track)}${energyPill(last, track)}${valencePill(last, track)}${genrePill(t.genre)}${moodPill}</div>
       </div>
       <div class="sugg-side">
-        <span class="fit" title="Transition fit: 100 = ideal. Weighted: BPM ${WEIGHTS.bpm}, key ${WEIGHTS.key}, energy ${WEIGHTS.energy}${mood.length ? `, mood ${WEIGHTS.mood}` : ""}; unknown data counts as uncertain.">${fit}</span>
+        <span class="fit" title="Transition fit: 100 = ideal. Weighted: BPM ${WEIGHTS.bpm}, key ${WEIGHTS.key}, genre ${WEIGHTS.genre}, energy ${WEIGHTS.energy}, valence ${WEIGHTS.valence}${mood.length ? `, mood ${WEIGHTS.mood}` : ""}; unknown data counts as uncertain.">${fit}</span>
         <button type="button" class="add" title="Add to end of set">+</button>
       </div>
     </li>`;
@@ -417,10 +441,10 @@ function renderSummary(tracks) {
     return;
   }
   const totalMs = tracks.reduce((sum, t) => sum + (t.duration_ms || 0), 0);
-  const bpms = tracks.map((t) => enr(t).bpm).filter(Boolean);
+  const bpms = tracks.map(bpmOf).filter(Boolean);
   let compatible = 0, known = 0;
   for (let i = 1; i < tracks.length; i++) {
-    const rel = keyRelation(enr(tracks[i - 1]).camelot, enr(tracks[i]).camelot);
+    const rel = keyRelation(camelotOf(tracks[i - 1]), camelotOf(tracks[i]));
     if (rel) { known++; if (rel.compatible) compatible++; }
   }
   const items = [
@@ -429,7 +453,7 @@ function renderSummary(tracks) {
   ];
   if (bpms.length) items.push(`<span>BPM <b>${fmtBpm(Math.min(...bpms))}–${fmtBpm(Math.max(...bpms))}</b></span>`);
   if (known) items.push(`<span><b>${compatible}/${known}</b> key-compatible transitions</span>`);
-  const noData = tracks.length - tracks.filter((t) => enr(t).bpm || enr(t).camelot).length;
+  const noData = tracks.length - tracks.filter((t) => bpmOf(t) || camelotOf(t)).length;
   if (noData) items.push(`<span>${noData} without BPM/key</span>`);
   $("set-summary").innerHTML = items.join("");
 }
@@ -446,15 +470,15 @@ function renderArc(tracks) {
   const barW = W / n - gap;
   let values, lo, hi, fmt;
   if (state.arcMetric === "bpm") {
-    values = tracks.map((t) => enr(t).bpm ?? null);
+    values = tracks.map(bpmOf);
     const known = values.filter((v) => v != null);
     lo = Math.min(...known, 999) - 5;
     hi = Math.max(...known, 0) + 5;
     fmt = (v) => `${fmtBpm(v)} BPM`;
   } else {
-    values = tracks.map((t) => enr(t).danceability ?? null);
+    values = tracks.map(energyOf);
     lo = 0; hi = 100;
-    fmt = (v) => `danceability ${v}`;
+    fmt = (v) => `energy ${v}`;
   }
   const bars = values.map((v, i) => {
     const x = i * (barW + gap);
@@ -465,9 +489,9 @@ function renderArc(tracks) {
     const h = Math.max(3, ((v - lo) / Math.max(hi - lo, 1)) * (H - 2));
     return `<rect x="${x}" y="${H - h}" width="${barW}" height="${h}" rx="1.5" fill="var(--bar)"><title>${label}</title></rect>`;
   });
-  // A generated draft's target arc, as a dashed line over the danceability bars.
+  // A generated draft's target arc, as a dashed line over the energy bars.
   const arc = state.set.arc;
-  if (arc && arc.range && state.arcMetric === "danceability" && arc.shape !== "free") {
+  if (arc && arc.range && state.arcMetric === "energy" && arc.shape !== "free") {
     const points = values.map((_, i) => {
       const target = arcTarget(arc.shape, n > 1 ? i / (n - 1) : 0, arc.range);
       return `${(i * (barW + gap) + barW / 2).toFixed(1)},${(H - (target / 100) * (H - 2)).toFixed(1)}`;
@@ -867,7 +891,7 @@ function renderGenDialog() {
 
   if (g.tags.length) {
     const pool = moodPool(state.tracks, g.tags);
-    const withData = pool.filter((c) => enr(c.track).bpm && enr(c.track).camelot).length;
+    const withData = pool.filter((c) => bpmOf(c.track) && camelotOf(c.track)).length;
     const all = pool.filter((c) => c.matched.length === g.tags.length).length;
     $("pool-preview").innerHTML = `<b>${pool.length}</b> tracks match${g.tags.length > 1 ? ` (${all} match all ${g.tags.length} tags)` : ""} · ${withData} of them have BPM/key data`;
   } else {
@@ -1004,6 +1028,7 @@ async function init() {
     state.byId.set(t.track_id, t);
   }
   state.vocab = tagVocabulary(state.tracks);
+  buildGenreModel(state.tracks);
   renderLibraryMeta(lib);
   $("main").hidden = false;
 
