@@ -846,8 +846,18 @@ function bindEvents() {
   $("set-generate").addEventListener("click", () => openGenerate());
   $("gen-notice").addEventListener("click", (e) => { if (e.target.closest(".notice-x")) hideNotice(); });
 
+  // In-app page links (Setlist builder <-> Subgenre) skip the leave warning:
+  // the working set is kept in the browser and restored on return. Closing
+  // the tab or going to another site still warns. Modified clicks (e.g.
+  // Ctrl+click into a new tab) don't leave this page, so they don't count.
+  let leavingInApp = false;
+  document.querySelectorAll(".topnav a").forEach((a) => a.addEventListener("click", (e) => {
+    if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+    storage("set", "setlist-draft", state.set);
+    leavingInApp = true;
+  }));
   window.addEventListener("beforeunload", (e) => {
-    if (isDirty()) { e.preventDefault(); e.returnValue = ""; }
+    if (!leavingInApp && isDirty()) { e.preventDefault(); e.returnValue = ""; }
   });
 }
 
