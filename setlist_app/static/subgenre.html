@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Subgenre</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='1' y='7' width='3' height='8' rx='1' fill='%236d4aff'/%3E%3Crect x='6' y='3' width='3' height='12' rx='1' fill='%236d4aff'/%3E%3Crect x='11' y='5' width='3' height='10' rx='1' fill='%236d4aff'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Subgenre</h1>
+    <nav class="topnav" aria-label="Pages">
+      <a href="/">Setlist builder</a>
+      <a href="/subgenre" aria-current="page">Subgenre</a>
+    </nav>
+    <div id="disc-stats" class="stats"></div>
+  </header>
+
+  <div id="disc-missing" class="missing" hidden>
+    <h2>No genre data yet</h2>
+    <p id="disc-missing-message"></p>
+    <pre>python enrich_library.py --only genres</pre>
+    <p>Then reload this page.</p>
+  </div>
+
+  <main id="disc-main" class="stack-page" hidden>
+    <ul id="stack" class="stack" aria-label="Genres, subgenres and songs"></ul>
+  </main>
+
+  <footer class="footer">
+    Genres from Deezer and MusicBrainz; tag data from <a href="https://www.last.fm" target="_blank" rel="noopener">Last.fm</a>.
+    BPM/key from <a href="https://getsongbpm.com" target="_blank" rel="noopener">GetSongBPM</a>; tempo/key where GetSongBPM has none from
+    <a href="https://reccobeats.com" target="_blank" rel="noopener">ReccoBeats</a>. Track data from Spotify.
+  </footer>
+
+  <script src="/static/scoring.js"></script>
+  <script src="/static/subgenre.js"></script>
+</body>
+</html>

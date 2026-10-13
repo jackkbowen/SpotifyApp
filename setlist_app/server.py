@@ -39,6 +39,18 @@ def index():
     return send_from_directory(STATIC_DIR, "index.html")
 
 
+@app.get("/subgenre")
+def subgenre():
+    return send_from_directory(STATIC_DIR, "subgenre.html")
+
+
+@app.get("/api/taxonomy")
+def taxonomy():
+    # Families, subgenres (with parent links) and vibes, built by enrich_library.py.
+    data = load_enriched_library()
+    return jsonify(generated_at=data.get("generated_at"), taxonomy=data.get("taxonomy"))
+
+
 @app.get("/static/<path:filename>")
 def static_files(filename):
     return send_from_directory(STATIC_DIR, filename)
