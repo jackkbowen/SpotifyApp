@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Playlist</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='1' y='7' width='3' height='8' rx='1' fill='%236d4aff'/%3E%3Crect x='6' y='3' width='3' height='12' rx='1' fill='%236d4aff'/%3E%3Crect x='11' y='5' width='3' height='10' rx='1' fill='%236d4aff'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Playlist</h1>
+    <nav class="topnav" aria-label="Pages">
+      <a href="/">Setlist builder</a>
+      <a href="/subgenre">Subgenre</a>
+      <a href="/import">Import</a>
+    </nav>
+  </header>
+
+  <main class="page-narrow">
+    <section class="card" id="pl" hidden>
+      <h2 id="pl-name"></h2>
+      <div id="pl-facts" class="facts"></div>
+      <div class="pl-actions">
+        <button id="copy-links" type="button">Copy track links</button>
+        <a id="dl-csv" class="btn ghost" href="#">Download CSV</a>
+        <a id="dl-m3u" class="btn ghost" href="#">Download M3U</a>
+        <a id="open-copy" class="btn ghost" href="#">Open a copy in the builder</a>
+      </div>
+      <p class="hint">To make it a Spotify playlist: copy the track links, open a playlist in the Spotify desktop app and paste (Ctrl/Cmd+V).</p>
+      <ol id="pl-tracks" class="pl-tracks"></ol>
+    </section>
+    <section class="card" id="pl-missing" hidden>
+      <h2>Playlist not found</h2>
+      <p>It may have been deleted. <a href="/">Open the setlist builder</a></p>
+    </section>
+  </main>
+
+  <footer class="footer">
+    BPM/key from <a href="https://getsongbpm.com" target="_blank" rel="noopener">GetSongBPM</a>, or the songs' audio features (Spotify via Exportify, or <a href="https://reccobeats.com" target="_blank" rel="noopener">ReccoBeats</a>). Track data from Spotify.
+  </footer>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/static/playlist.js"></script>
+</body>
+</html>

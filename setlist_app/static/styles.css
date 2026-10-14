@@ -180,6 +180,10 @@ tbody td {
   white-space: nowrap;
 }
 tbody tr:hover { background: var(--row-hover); }
+/* Virtualised library table: rows must all be one height (app.js measures it). */
+#library-body tr { height: 35px; }
+#library-body tr.spacer, #library-body tr.spacer:hover { height: auto; background: none; }
+#library-body tr.spacer td { padding: 0; border: 0; }
 tbody tr.selected { background: var(--row-selected); }
 td.track a { color: var(--text); text-decoration: none; font-weight: 500; }
 td.track a:hover { text-decoration: underline; }
@@ -349,9 +353,7 @@ button.linkish:hover { text-decoration: underline; }
   .table-wrap { max-height: 60vh; }
 }
 
-/* ---- Spotify export ---- */
-button.spotify { background: #1db954; border-color: #1db954; color: #0b0b0b; font-weight: 600; }
-button.spotify:disabled { opacity: .45; }
+/* ---- Share / edit links row ---- */
 .spotify-row { font-size: 12px; color: var(--muted); }
 .spotify-row a { color: var(--good); }
 .spotify-row .stale { color: var(--ok); }
@@ -420,3 +422,50 @@ button.row:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px
   .song-artist { grid-column: 1; font-size: 12px; }
   .song-meta { grid-column: 2; grid-row: 1 / span 2; align-self: center; }
 }
+
+/* ---- Import + shared playlist pages ---- */
+.page-narrow { flex: 1; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 14px; align-items: stretch; }
+.page-narrow > .card { width: 100%; max-width: 820px; margin: 0 auto; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px 20px; box-shadow: var(--shadow); }
+.card h2 { margin: 0 0 10px; font-size: 17px; overflow-wrap: anywhere; }
+.steps { margin: 0 0 10px; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }
+.privacy { font-size: 12.5px; color: var(--muted); background: var(--panel-2); border-radius: 8px; padding: 8px 10px; }
+#upload-form { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; margin-top: 12px; }
+.drop {
+  width: 100%; display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center;
+  padding: 26px 16px; border: 2px dashed var(--border); border-radius: 12px; cursor: pointer; background: var(--panel-2);
+}
+.drop:hover, .drop.over { border-color: var(--accent); background: var(--row-hover); }
+.drop.has-file { border-style: solid; border-color: var(--good); }
+.drop-main { font-weight: 500; }
+.drop-sub { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.result { margin-top: 12px; padding: 10px 12px; border-radius: 8px; }
+.result p { margin: 4px 0; }
+.result.ok { background: var(--good-bg); }
+.result.err { background: var(--bad-bg); color: var(--bad); }
+.muted { color: var(--muted); }
+.err-text { color: var(--bad); }
+.facts { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+.facts b { color: var(--text); }
+.pl-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+a.btn {
+  display: inline-block; border-radius: 6px; padding: 5px 12px; text-decoration: none; white-space: nowrap;
+  background: var(--accent); color: var(--accent-text); border: 1px solid var(--accent);
+}
+a.btn.ghost { background: transparent; color: var(--text); border-color: var(--border); }
+a.btn.ghost:hover { background: var(--panel-2); }
+.pl-tracks { margin: 10px 0 0; padding-left: 28px; }
+.pl-tracks li { padding: 6px 0; border-bottom: 1px solid var(--border); }
+.pl-tracks li > div { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) auto 3.4em; gap: 12px; align-items: baseline; }
+.pl-title, .pl-artist { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pl-title a { color: var(--text); font-weight: 500; text-decoration: none; }
+.pl-title a:hover { text-decoration: underline; }
+.pl-artist { color: var(--muted); }
+.pl-meta, .pl-dur { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+@media (max-width: 600px) {
+  .pl-tracks li > div { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "title dur" "artist meta"; gap: 0 10px; }
+  .pl-title { grid-area: title; } .pl-artist { grid-area: artist; } .pl-meta { grid-area: meta; } .pl-dur { grid-area: dur; }
+}
+.queue .pl-meta { display: flex; gap: 4px; justify-content: flex-end; }
+.q-step { background: var(--ok-bg); color: var(--ok); border-radius: 999px; padding: 0 7px; font-size: 11.5px; }
+@media (min-width: 601px) { .queue li > div { grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) 13em 5.5em; } }

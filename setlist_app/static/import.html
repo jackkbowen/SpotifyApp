@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Import Songs</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='1' y='7' width='3' height='8' rx='1' fill='%236d4aff'/%3E%3Crect x='6' y='3' width='3' height='12' rx='1' fill='%236d4aff'/%3E%3Crect x='11' y='5' width='3' height='10' rx='1' fill='%236d4aff'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Import</h1>
+    <nav class="topnav" aria-label="Pages">
+      <a href="/">Setlist builder</a>
+      <a href="/subgenre">Subgenre</a>
+      <a href="/import" aria-current="page">Import</a>
+    </nav>
+    <div id="lib-stats" class="stats"></div>
+  </header>
+
+  <main class="page-narrow">
+    <section class="card">
+      <h2>Add your songs to the shared library</h2>
+      <ol class="steps">
+        <li>Go to <a href="https://exportify.net" target="_blank" rel="noopener">exportify.net</a> and log in with Spotify.</li>
+        <li>Click <b>Export</b> next to <b>Liked Songs</b> or any playlist. You get a <code>.csv</code> file.</li>
+        <li>Upload that file here. Everyone can then build playlists with the songs.</li>
+      </ol>
+      <p class="privacy"><b>Privacy:</b> only song information is kept (title, artists, album, tempo, key, genres). Your Spotify username and the dates you saved songs are never stored, and the library doesn't record who uploaded what.</p>
+
+      <form id="upload-form">
+        <label id="drop" class="drop" for="file">
+          <input id="file" type="file" accept=".csv,text/csv" hidden>
+          <span class="drop-main">Drop your Exportify CSV here, or <u>choose a file</u></span>
+          <span id="file-name" class="drop-sub">Up to 15 MB</span>
+        </label>
+        <button id="upload" type="submit" disabled>Import songs</button>
+      </form>
+      <div id="result" class="result" hidden></div>
+    </section>
+
+    <section class="card">
+      <h2>Library status</h2>
+      <div id="status" class="facts"></div>
+      <p class="hint">After an import, songs are usable right away with the data in your CSV. BPM matches, extra tags and genres are added in the background, and big imports can take a while to finish.</p>
+    </section>
+
+    <section class="card">
+      <h2>Enrichment queue <span id="queue-count" class="muted"></span></h2>
+      <p id="queue-empty" class="hint" hidden>Nothing waiting. Every song has been looked up.</p>
+      <ol id="queue" class="pl-tracks queue"></ol>
+      <p id="queue-more" class="hint" hidden></p>
+    </section>
+  </main>
+
+  <footer class="footer">
+    CSV format from <a href="https://exportify.net" target="_blank" rel="noopener">Exportify</a>.
+    Extra data from <a href="https://getsongbpm.com" target="_blank" rel="noopener">GetSongBPM</a>, <a href="https://www.last.fm" target="_blank" rel="noopener">Last.fm</a>, <a href="https://reccobeats.com" target="_blank" rel="noopener">ReccoBeats</a>, Deezer and MusicBrainz.
+  </footer>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/static/import.js"></script>
+</body>
+</html>

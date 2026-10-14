@@ -69,6 +69,8 @@ def _source_family(source: str) -> str:
         return "deezer"
     if source.startswith("musicbrainz"):
         return "musicbrainz"
+    if source == "spotify":
+        return "spotify"  # artist genres from an uploaded Exportify CSV
     return "lastfm"  # Last.fm track- and artist-level tags
 
 

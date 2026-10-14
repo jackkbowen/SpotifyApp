@@ -367,6 +367,29 @@ def _vote_weights(items: list[dict], factor: float = 1.0) -> list[tuple[str, int
     return [(i["name"], max(10, round(100 * max(i["count"], 1) / top * factor))) for i in items]
 
 
+SPOTIFY_GENRE_WEIGHT = 60  # artist-level genres, but specific ("edm trap", "bass house")
+
+
+def merge_extra_genres(genres: list[dict], extra: list[str], source: str,
+                       weight: int = SPOTIFY_GENRE_WEIGHT) -> list[dict]:
+    """Fold another source's genre names (e.g. Spotify artist genres from an
+    Exportify CSV) into a track's `genres` list, keeping it strongest first."""
+    from setlist_app.tags import display_form, tag_key
+    merged = {tag_key(display_form(g["genre"])): {**g, "sources": list(g.get("sources", [])),
+                                                  "by_source": dict(g.get("by_source", {}))} for g in genres}
+    for name in extra:
+        display = display_form(name)
+        key = tag_key(display)
+        if not key:
+            continue
+        slot = merged.setdefault(key, {"genre": display, "weight": 0, "sources": [], "by_source": {}})
+        slot["weight"] = max(slot["weight"], weight)
+        if source not in slot["sources"]:
+            slot["sources"].append(source)
+        slot["by_source"][source] = max(slot["by_source"].get(source, 0), weight)
+    return sorted(merged.values(), key=lambda g: (-g["weight"], g["genre"]))[:MAX_GENRES_PER_TRACK]
+
+
 def genres_for_library(tracks: list[dict], cache: dict) -> list[tuple[str, list[dict]]]:
     """(genre_status, genres) per track, in order.
 

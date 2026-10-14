@@ -49,9 +49,10 @@ function toast(message, isError = false) {
 }
 
 async function api(path, options = {}) {
+  const { headers = {}, ...rest } = options;
   const res = await fetch(path, {
-    headers: options.body ? { "Content-Type": "application/json" } : {},
-    ...options,
+    ...rest,
+    headers: { ...(rest.body && typeof rest.body === "string" ? { "Content-Type": "application/json" } : {}), ...headers },
   });
   if (res.status === 204) return null;
   const data = await res.json().catch(() => ({}));
@@ -95,9 +96,20 @@ const state = {
 };
 
 function blankSet() {
-  // spotify: the playlist this set was last exported to ({id, url, exportedAt, updatedAt}).
-  return { id: null, name: "", trackIds: [], snapshots: {}, mood: [], arc: null, spotify: null };
+  return { id: null, name: "", trackIds: [], snapshots: {}, mood: [], arc: null };
 }
+
+// ---- Playlist edit keys ----
+// Playlists have no owner accounts: saving one returns a secret edit key,
+// kept here in this browser. "My playlists" are the ones this browser holds
+// keys for. An edit link (/?playlist=ID&key=KEY) adds a key on another device.
+function myKeys() {
+  const keys = storage("get", "playlist-keys");
+  return keys && typeof keys === "object" ? keys : {};
+}
+function setKey(id, key) { storage("set", "playlist-keys", { ...myKeys(), [id]: key }); }
+function dropKey(id) { const k = myKeys(); delete k[id]; storage("set", "playlist-keys", k); }
+const keyFor = (id) => (id ? myKeys()[id] : undefined);
 
 const fingerprintOf = (name, trackIds, mood) => JSON.stringify({ name: name.trim(), trackIds, mood: mood || [] });
 const fingerprint = () => fingerprintOf(state.set.name, state.set.trackIds, state.set.mood);
@@ -123,7 +135,7 @@ const COLUMNS = [
   { key: "key", label: "Key", metric: true, value: (t) => camelotSortValue(enr(t).camelot) },
   { key: "danceability", label: "Dance", num: true, metric: true, title: "Danceability (0–100) from GetSongBPM", value: (t) => enr(t).danceability ?? null },
   { key: "acousticness", label: "Acoustic", num: true, metric: true, title: "Acousticness (0–100) from GetSongBPM", value: (t) => enr(t).acousticness ?? null },
-  { key: "added_at", label: "Liked", value: (t) => t.added_at },
+  { key: "added_at", label: "Added", title: "When the song joined the shared library", value: (t) => t.added_at },
 ];
 
 function bpmInRange(bpm, min, max, halftime) {
@@ -202,14 +214,42 @@ function pctCell(value, t) {
   return value == null ? none(t) : String(value);
 }
 
+// The table is virtualised: only the rows in (and just around) the visible
+// part of the scroll area are in the DOM, between two spacer rows that keep
+// the scrollbar the full height. Every row is the same height (see
+// #library-body tr in styles.css), so row N is at N × rowHeight.
 let visibleIds = [];
+let tableRows = [];
+const table = { rowHeight: 35, overscan: 15, start: -1, end: -1, frame: 0 };
 
 function renderTable() {
-  const rows = filteredTracks();
-  visibleIds = rows.map((t) => t.track_id);
-  const inSet = new Set(state.set.trackIds);
+  tableRows = filteredTracks();
+  visibleIds = tableRows.map((t) => t.track_id);
+  table.start = table.end = -1;  // force a repaint
+  paintRows();
 
-  $("library-body").innerHTML = rows.map((t) => {
+  $("result-count").textContent = `Showing ${tableRows.length} of ${state.tracks.length}`;
+  const checkAll = $("check-all");
+  const selectedVisible = visibleIds.filter((id) => state.selected.has(id)).length;
+  checkAll.checked = tableRows.length > 0 && selectedVisible === tableRows.length;
+  checkAll.indeterminate = selectedVisible > 0 && selectedVisible < tableRows.length;
+  updateSelectionButtons();
+}
+
+function paintRows() {
+  const wrap = $("table-wrap"), body = $("library-body");
+  const top = Math.max(0, wrap.scrollTop - body.offsetTop);  // scroll position within the rows
+  const first = Math.floor(top / table.rowHeight);
+  const shown = Math.ceil(wrap.clientHeight / table.rowHeight) + 1;
+  const start = Math.max(0, first - table.overscan);
+  const end = Math.min(tableRows.length, first + shown + table.overscan);
+  if (start === table.start && end === table.end) return;
+  table.start = start;
+  table.end = end;
+
+  const inSet = new Set(state.set.trackIds);
+  const spacer = (n) => (n ? `<tr class="spacer" aria-hidden="true"><td colspan="${COLUMNS.length + 2}" style="height:${n * table.rowHeight}px"></td></tr>` : "");
+  body.innerHTML = spacer(start) + tableRows.slice(start, end).map((t) => {
     const e = enr(t);
     const hasData = e.bpm || e.camelot;
     const selected = state.selected.has(t.track_id);
@@ -230,14 +270,23 @@ function renderTable() {
       <td class="num metric">${pctCell(e.acousticness, t)}</td>
       <td class="sub">${esc((t.added_at || "").slice(0, 10))}</td>
     </tr>`;
-  }).join("");
+  }).join("") + spacer(tableRows.length - end);
 
-  $("result-count").textContent = `Showing ${rows.length} of ${state.tracks.length}`;
-  const checkAll = $("check-all");
-  const selectedVisible = visibleIds.filter((id) => state.selected.has(id)).length;
-  checkAll.checked = rows.length > 0 && selectedVisible === rows.length;
-  checkAll.indeterminate = selectedVisible > 0 && selectedVisible < rows.length;
-  updateSelectionButtons();
+  // Font size or zoom can change the row height: re-measure and repaint if so.
+  const h = body.querySelector("tr[data-id]")?.getBoundingClientRect().height;
+  if (h && Math.abs(h - table.rowHeight) > 0.5) {
+    table.rowHeight = h;
+    table.start = table.end = -1;
+    schedulePaint();
+  }
+}
+
+function schedulePaint() {
+  if (table.frame) return;
+  table.frame = requestAnimationFrame(() => {
+    table.frame = 0;
+    paintRows();
+  });
 }
 
 function updateSelectionButtons() {
@@ -509,78 +558,50 @@ function renderSetStatus() {
   el.textContent = !state.set.id
     ? (state.set.trackIds.length ? "Not saved yet" : "New setlist")
     : dirty ? "Unsaved changes" : "Saved";
-  $("set-delete").disabled = !state.set.id;
-  $("export-csv").disabled = $("export-m3u").disabled = $("export-spotify").disabled = !state.set.trackIds.length;
-  renderSpotifyRow();
+  $("set-delete").disabled = !state.set.id || !keyFor(state.set.id);
+  $("export-csv").disabled = $("export-m3u").disabled = $("copy-links").disabled = !state.set.trackIds.length;
+  renderShareRow();
 }
 
-function renderSpotifyRow() {
-  const sp = state.set.spotify;
-  $("export-spotify").textContent = sp ? "Update on Spotify" : "Export to Spotify";
-  $("export-spotify").title = sp
-    ? "Replace the tracks, name and description of the linked Spotify playlist with this set"
-    : "Create a private playlist in your Spotify account";
-  const row = $("spotify-row");
-  row.hidden = !sp;
-  if (!sp) return;
-  // Saved after the last export, or edited since: the playlist is behind.
-  const stale = isDirty() || (sp.updatedAt && sp.exportedAt && sp.updatedAt > sp.exportedAt);
-  row.innerHTML = `On Spotify: <a href="${esc(sp.url)}" target="_blank" rel="noopener">open playlist ↗</a>` +
-    (sp.exportedAt ? ` · exported ${esc(new Date(sp.exportedAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }))}` : "") +
-    (stale ? ' · <span class="stale">changed since</span>' : "") +
-    ' · <button type="button" class="linkish" id="spotify-as-new">export as new playlist</button>';
+// Share (read-only) and edit (private) links for a saved playlist.
+function renderShareRow() {
+  const row = $("share-row");
+  const id = state.set.id;
+  row.hidden = !id;
+  if (!id) return;
+  const key = keyFor(id);
+  row.innerHTML = `Share: <a href="/p/${encodeURIComponent(id)}" target="_blank" rel="noopener">view link</a>` +
+    ` <button type="button" class="linkish" data-copy="share">copy</button>` +
+    (key ? ` · Edit link (keep private) <button type="button" class="linkish" data-copy="edit">copy</button>` : " · read-only here");
 }
 
-// ---- Export to Spotify ----
+function absolute(path) { return new URL(path, location.origin).href; }
 
-let spotifyBusy = false;
-
-async function ensureSpotifyConnected() {
-  let st = await api("/api/spotify/status");
-  if (!st.configured) throw new Error(st.message);
-  if (st.connected) return st;
-  st = await api("/api/spotify/connect", { method: "POST" });
-  toast("Log in to Spotify in the browser tab that opened, then come back here…");
-  $("export-spotify").textContent = "Waiting for Spotify login…";
-  const deadline = Date.now() + 3 * 60 * 1000;
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, 2000));
-    st = await api("/api/spotify/status");
-    if (st.connected) return st;
-    if (st.error) throw new Error(st.error);
-  }
-  throw new Error("Timed out waiting for the Spotify login. Click Export to Spotify to try again.");
-}
-
-async function exportToSpotify(asNew = false) {
-  if (spotifyBusy) return;
-  spotifyBusy = true;
-  $("export-spotify").disabled = true;
+async function copyText(text, message) {
   try {
-    if ((isDirty() || !state.set.id) && !(await saveSet())) return;
-    const st = await ensureSpotifyConnected();
-    $("export-spotify").textContent = "Exporting…";
-    const { result, setlist } = await api(`/api/setlists/${state.set.id}/spotify`, {
-      method: "POST",
-      body: JSON.stringify({ as_new: asNew }),
-    });
-    state.set.spotify = {
-      id: setlist.spotify_playlist_id, url: setlist.spotify_playlist_url,
-      exportedAt: setlist.spotify_exported_at, updatedAt: setlist.updated_at,
-    };
-    storage("set", "setlist-draft", state.set);
-    const verb = result.created ? "Created" : "Updated";
-    toast(`${verb} “${state.set.name}” on Spotify (${result.track_count} tracks${st.user ? `, ${st.user}` : ""})`);
-  } catch (err) {
-    toast(err.message, true);
-  } finally {
-    spotifyBusy = false;
-    renderSetStatus();
+    await navigator.clipboard.writeText(text);
+  } catch {
+    // Older browsers / insecure contexts: fall back to a hidden textarea.
+    const ta = Object.assign(document.createElement("textarea"), { value: text });
+    document.body.append(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
   }
+  toast(message);
+}
+
+// Spotify track links, one per line: paste them into a Spotify playlist
+// (desktop app: select the playlist, then Ctrl/Cmd+V) to add every track.
+function copyTrackLinks() {
+  const ids = state.set.trackIds;
+  if (!ids.length) return;
+  const links = ids.map((id) => setTrack(id).spotify_url || `https://open.spotify.com/track/${id}`);
+  copyText(links.join("\n"), `Copied ${links.length} track links. Paste them into a Spotify playlist (desktop app: Ctrl+V).`);
 }
 
 function renderSavedList() {
-  const opts = ['<option value="">Saved setlists…</option>'];
+  const opts = ['<option value="">My playlists…</option>'];
   for (const s of state.savedSetlists) {
     opts.push(`<option value="${esc(s.id)}"${s.id === state.set.id ? " selected" : ""}>${esc(s.name)} (${s.track_count})</option>`);
   }
@@ -592,7 +613,13 @@ function renderSavedList() {
 // ---------------------------------------------------------------------------
 
 async function refreshSavedList() {
-  state.savedSetlists = (await api("/api/setlists")).setlists;
+  const ids = Object.keys(myKeys());
+  state.savedSetlists = ids.length
+    ? (await api(`/api/playlists?ids=${ids.map(encodeURIComponent).join(",")}`)).playlists
+    : [];
+  // Forget keys for playlists that no longer exist.
+  const alive = new Set(state.savedSetlists.map((p) => p.id));
+  ids.filter((id) => !alive.has(id)).forEach(dropKey);
   renderSavedList();
 }
 
@@ -608,9 +635,6 @@ function loadIntoEditor(setlist) {
     snapshots: Object.fromEntries(setlist.tracks.map((t) => [t.track_id, t])),
     mood: setlist.mood_tags || [],
     arc: null,
-    spotify: setlist.spotify_playlist_id
-      ? { id: setlist.spotify_playlist_id, url: setlist.spotify_playlist_url, exportedAt: setlist.spotify_exported_at, updatedAt: setlist.updated_at }
-      : null,
   };
   state.savedFingerprint = fingerprint();
   setChanged();
@@ -626,10 +650,25 @@ async function saveSet() {
   }
   const body = JSON.stringify({ name, track_ids: state.set.trackIds, mood_tags: state.set.mood });
   const arc = state.set.arc;  // keep a generated draft's arc overlay after saving
+  const create = async () => {
+    const { playlist, edit_key } = await api("/api/playlists", { method: "POST", body });
+    setKey(playlist.id, edit_key);
+    return playlist;
+  };
   try {
-    const saved = state.set.id
-      ? await api(`/api/setlists/${state.set.id}`, { method: "PUT", body })
-      : await api("/api/setlists", { method: "POST", body });
+    let saved;
+    if (state.set.id && keyFor(state.set.id)) {
+      try {
+        saved = await api(`/api/playlists/${state.set.id}`, { method: "PUT", body, headers: { "X-Edit-Key": keyFor(state.set.id) } });
+      } catch (err) {
+        if (err.code !== "not_found" && err.code !== "forbidden") throw err;
+        dropKey(state.set.id);
+        saved = await create();  // gone or no longer ours: save as a new playlist
+        toast("Saved as a new playlist (the original was deleted or can't be edited here).");
+      }
+    } else {
+      saved = await create();
+    }
     loadIntoEditor(saved);
     state.set.arc = arc;
     renderArc(state.set.trackIds.map(setTrack));
@@ -637,7 +676,6 @@ async function saveSet() {
     toast(`Saved “${saved.name}”`);
     return true;
   } catch (err) {
-    if (err.code === "not_found") state.set.id = null;  // deleted elsewhere: next save creates it
     toast(err.message, true);
     return false;
   }
@@ -645,7 +683,7 @@ async function saveSet() {
 
 async function exportSet(format) {
   if ((isDirty() || !state.set.id) && !(await saveSet())) return;
-  window.location.href = `/api/setlists/${state.set.id}/export?format=${format}`;
+  window.location.href = `/api/playlists/${encodeURIComponent(state.set.id)}/export?format=${format}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -694,6 +732,9 @@ function bindEvents() {
     for (const id of visibleIds) e.target.checked ? state.selected.add(id) : state.selected.delete(id);
     renderTable();
   });
+
+  $("table-wrap").addEventListener("scroll", schedulePaint, { passive: true });
+  window.addEventListener("resize", schedulePaint);
 
   $("library-body").addEventListener("click", (e) => {
     const row = e.target.closest("tr[data-id]");
@@ -787,7 +828,7 @@ function bindEvents() {
     if (!id || id === state.set.id) return;
     if (!confirmDiscard()) { renderSavedList(); return; }
     try {
-      loadIntoEditor(await api(`/api/setlists/${id}`));
+      loadIntoEditor(await api(`/api/playlists/${encodeURIComponent(id)}`));
       hideNotice();
     } catch (err) {
       toast(err.message, true);
@@ -796,13 +837,14 @@ function bindEvents() {
   });
 
   $("set-delete").addEventListener("click", async () => {
-    if (!state.set.id || !confirm(`Delete “${state.set.name}”? This can't be undone.`)) return;
+    if (!state.set.id || !confirm(`Delete “${state.set.name}”? This can't be undone, and its share link will stop working.`)) return;
     try {
-      await api(`/api/setlists/${state.set.id}`, { method: "DELETE" });
+      await api(`/api/playlists/${encodeURIComponent(state.set.id)}`, { method: "DELETE", headers: { "X-Edit-Key": keyFor(state.set.id) || "" } });
       toast(`Deleted “${state.set.name}”`);
     } catch (err) {
       if (err.code !== "not_found") { toast(err.message, true); return; }
     }
+    dropKey(state.set.id);
     state.set = blankSet();
     state.savedFingerprint = fingerprint();
     setChanged();
@@ -811,9 +853,14 @@ function bindEvents() {
 
   $("export-csv").addEventListener("click", () => exportSet("csv"));
   $("export-m3u").addEventListener("click", () => exportSet("m3u"));
-  $("export-spotify").addEventListener("click", () => exportToSpotify(false));
-  $("spotify-row").addEventListener("click", (e) => {
-    if (e.target.id === "spotify-as-new") exportToSpotify(true);
+  $("copy-links").addEventListener("click", copyTrackLinks);
+  $("share-row").addEventListener("click", (e) => {
+    const which = e.target.dataset.copy;
+    if (!which || !state.set.id) return;
+    const id = encodeURIComponent(state.set.id);
+    if (which === "share") copyText(absolute(`/p/${id}`), "Share link copied. Anyone with it can view this playlist.");
+    if (which === "edit") copyText(absolute(`/?playlist=${id}&key=${encodeURIComponent(keyFor(state.set.id))}`),
+      "Edit link copied. Keep it private: anyone with it can change or delete this playlist.");
   });
 
   document.querySelectorAll(".arc .seg button").forEach((btn) => btn.addEventListener("click", () => {
@@ -1045,12 +1092,38 @@ async function init() {
   bindEvents();
   renderHead();
 
-  // Restore an unsaved working setlist from a previous visit, if any.
-  const draft = storage("get", "setlist-draft");
+  // An edit link (?playlist=ID&key=KEY) or "open a copy" link (?copy=ID)?
+  const params = new URLSearchParams(location.search);
+  const linkId = params.get("playlist"), linkKey = params.get("key"), copyId = params.get("copy");
+  if (linkId && linkKey) setKey(linkId, linkKey);
+  if (linkId || copyId) history.replaceState(null, "", location.pathname);  // keep the key out of the address bar
   await refreshSavedList().catch((err) => toast(err.message, true));
-  if (draft && Array.isArray(draft.trackIds)) {
-    const saved = draft.id && state.savedSetlists.some((s) => s.id === draft.id)
-      ? await api(`/api/setlists/${draft.id}`).catch(() => null)
+
+  let opened = false;
+  if (linkId || copyId) {
+    try {
+      const playlist = await api(`/api/playlists/${encodeURIComponent(linkId || copyId)}`);
+      if (linkId && keyFor(linkId)) {
+        loadIntoEditor(playlist);
+        toast(`Opened “${playlist.name}” for editing.`);
+      } else {
+        // Someone else's playlist: start an unsaved copy of it.
+        state.set = { ...blankSet(), name: `${playlist.name} (copy)`, trackIds: playlist.tracks.map((t) => t.track_id),
+          snapshots: Object.fromEntries(playlist.tracks.map((t) => [t.track_id, t])), mood: playlist.mood_tags || [] };
+        state.savedFingerprint = fingerprintOf("", [], []);
+        toast(`Started a copy of “${playlist.name}”. Save it to keep it.`);
+      }
+      opened = true;
+    } catch (err) {
+      toast(err.message, true);
+    }
+  }
+
+  // Otherwise restore an unsaved working setlist from a previous visit, if any.
+  const draft = storage("get", "setlist-draft");
+  if (!opened && draft && Array.isArray(draft.trackIds)) {
+    const saved = draft.id && keyFor(draft.id)
+      ? await api(`/api/playlists/${encodeURIComponent(draft.id)}`).catch(() => null)
       : null;
     state.set = {
       ...blankSet(),
@@ -1060,15 +1133,12 @@ async function init() {
       snapshots: draft.snapshots || {},
       mood: Array.isArray(draft.mood) ? draft.mood : [],
       arc: draft.arc || null,
-      spotify: saved?.spotify_playlist_id
-        ? { id: saved.spotify_playlist_id, url: saved.spotify_playlist_url, exportedAt: saved.spotify_exported_at, updatedAt: saved.updated_at }
-        : null,
     };
     state.savedFingerprint = saved
       ? fingerprintOf(saved.name, saved.tracks.map((t) => t.track_id), saved.mood_tags)
       : fingerprintOf("", [], []);
-    renderSavedList();
   }
+  renderSavedList();
   renderSet();
   renderTable();
 }

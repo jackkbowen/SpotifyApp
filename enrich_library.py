@@ -51,6 +51,7 @@ from setlist_app.paths import (
     FEATURES_CACHE_PATH,
     GENRE_CACHE_PATH,
     LASTFM_CACHE_PATH,
+    LIBRARY_SOURCE_PATH,
     LIKED_SONGS_PATH,
     TAXONOMY_OVERRIDES_PATH,
     UNMATCHED_PATH,
@@ -128,8 +129,9 @@ def load_library(path: Path) -> dict:
 
 
 def slim_track(track: dict) -> dict:
-    # spotify_raw duplicates everything else and roughly triples the file size.
-    return {k: v for k, v in track.items() if k != "spotify_raw"}
+    # spotify_raw duplicates everything else and roughly triples the file size;
+    # csv_features/csv_genres are folded into `features`/`genres` instead.
+    return {k: v for k, v in track.items() if k not in ("spotify_raw", "csv_features", "csv_genres")}
 
 
 def unique_by_isrc(tracks: list[dict]) -> dict[str, dict]:
@@ -474,6 +476,14 @@ def build_enriched_library(library: dict, cache: dict, unmatched: dict, source_p
     counts = {"enriched": 0, "unmatched": 0, "pending": 0}
     for track, (tag_status, tags), (feature_status, features), (genre_status, genres) in zip(
             library["tracks"], tag_results, feature_results, genre_results):
+        # Songs imported from an Exportify CSV carry Spotify's own audio
+        # features and artist genres; those beat ReccoBeats and join the
+        # Deezer/MusicBrainz genres as another source.
+        if track.get("csv_features"):
+            feature_status, features = "found", feature_enrichment.from_exportify(track["csv_features"])
+        if track.get("csv_genres"):
+            genres = genre_enrichment.merge_extra_genres(genres, track["csv_genres"], "spotify")
+            genre_status = "genres" if genres else genre_status
         tag_counts[tag_status] += 1
         feature_counts[feature_status] += 1
         genre_counts[genre_status] += 1
@@ -536,8 +546,9 @@ def build_enriched_library(library: dict, cache: dict, unmatched: dict, source_p
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--input", type=Path, default=LIKED_SONGS_PATH,
-                        help=f"Liked Songs export to read (default: {LIKED_SONGS_PATH})")
+    parser.add_argument("--input", type=Path, default=None,
+                        help=f"Library to read (default: the shared library, {LIBRARY_SOURCE_PATH}, "
+                             f"if it exists, else {LIKED_SONGS_PATH})")
     parser.add_argument("--only", choices=("bpm", "tags", "features", "genres"), default=None,
                         help="Run just one step: 'bpm' (GetSongBPM), 'tags' (Last.fm), 'features' "
                              "(ReccoBeats) or 'genres' (Deezer + MusicBrainz). Default: all four. "
@@ -548,7 +559,12 @@ def parse_args(argv):
                         help="Look up tracks that previously had no match/weren't found again.")
     parser.add_argument("--no-fetch", action="store_true",
                         help="Don't call any API; just rebuild library_enriched.json from the caches.")
-    return parser.parse_args(argv)
+    parser.add_argument("--skip-build", action="store_true",
+                        help="Fetch only; don't rebuild library_enriched.json (the web app does that itself).")
+    args = parser.parse_args(argv)
+    if args.input is None:
+        args.input = LIBRARY_SOURCE_PATH if LIBRARY_SOURCE_PATH.exists() else LIKED_SONGS_PATH
+    return args
 
 
 def _api_key(name: str) -> str | None:
@@ -629,6 +645,12 @@ def main(argv=None) -> int:
         print("\n== Genres (Deezer + MusicBrainz) ==")
         stopped_early = genre_enrichment.run_genre_lookups(
             library["tracks"], genre_cache, args.limit, args.retry_unmatched)
+
+    if args.skip_build:
+        if stopped_early:
+            print(f"\nStopped early: {stopped_early}", file=sys.stderr)
+            return 1
+        return 0
 
     enriched = build_enriched_library(library, cache, unmatched, args.input, lastfm_cache,
                                       feature_cache, genre_cache)

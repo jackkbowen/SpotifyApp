@@ -13,6 +13,7 @@
     <nav class="topnav" aria-label="Pages">
       <a href="/">Setlist builder</a>
       <a href="/subgenre" aria-current="page">Subgenre</a>
+      <a href="/import">Import</a>
     </nav>
     <div id="disc-stats" class="stats"></div>
   </header>
@@ -20,8 +21,7 @@
   <div id="disc-missing" class="missing" hidden>
     <h2>No genre data yet</h2>
     <p id="disc-missing-message"></p>
-    <pre>python enrich_library.py --only genres</pre>
-    <p>Then reload this page.</p>
+    <p><a href="/import">Import songs from an Exportify CSV</a>. Genres appear as soon as the import finishes, and fill in further while the songs are enriched.</p>
   </div>
 
   <main id="disc-main" class="stack-page" hidden>

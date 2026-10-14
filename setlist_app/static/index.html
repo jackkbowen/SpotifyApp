@@ -13,6 +13,7 @@
     <nav class="topnav" aria-label="Pages">
       <a href="/" aria-current="page">Setlist builder</a>
       <a href="/subgenre">Subgenre</a>
+      <a href="/import">Import</a>
     </nav>
     <div id="library-stats" class="stats"></div>
   </header>
@@ -20,10 +21,9 @@
   <div id="warnings" class="warnings" hidden></div>
 
   <div id="missing-library" class="missing" hidden>
-    <h2>No enriched library yet</h2>
+    <h2>The library is empty</h2>
     <p id="missing-message"></p>
-    <pre>python enrich_library.py</pre>
-    <p>Then reload this page.</p>
+    <p><a href="/import">Import your songs from an Exportify CSV</a> to get started.</p>
   </div>
 
   <main id="main" class="layout" hidden>
@@ -55,7 +55,7 @@
         <button id="add-selected" type="button" disabled>Add selected to set</button>
         <button id="clear-selected" class="ghost" type="button" disabled>Clear selection</button>
       </div>
-      <div class="table-wrap">
+      <div class="table-wrap" id="table-wrap">
         <table id="library-table">
           <colgroup id="library-cols"></colgroup>
           <thead><tr id="library-head"></tr></thead>
@@ -67,7 +67,7 @@
     <!-- Setlist -->
     <section class="panel setlist" aria-label="Setlist">
       <div class="set-toolbar">
-        <select id="saved-setlists" aria-label="Saved setlists"></select>
+        <select id="saved-setlists" aria-label="My playlists"></select>
         <button id="set-generate" type="button" title="Build a draft setlist from mood/vibe tags">Generate…</button>
         <button id="set-new" class="ghost" type="button">New</button>
         <button id="set-delete" class="ghost danger" type="button">Delete</button>
@@ -81,9 +81,9 @@
         <span class="spacer"></span>
         <button id="export-csv" class="ghost" type="button">Export CSV</button>
         <button id="export-m3u" class="ghost" type="button">Export M3U</button>
-        <button id="export-spotify" class="spotify" type="button" title="Create a private playlist in your Spotify account">Export to Spotify</button>
+        <button id="copy-links" class="ghost" type="button" title="Copy every track's Spotify link; paste them into a Spotify playlist to add the songs">Copy track links</button>
       </div>
-      <div id="spotify-row" class="spotify-row" hidden></div>
+      <div id="share-row" class="spotify-row" hidden></div>
 
       <div class="mood-bar">
         <span class="mood-label">Mood</span>

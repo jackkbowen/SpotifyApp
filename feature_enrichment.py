@@ -149,7 +149,8 @@ def run_feature_lookups(tracks: list[dict], cache: dict, limit: int | None,
     normalize_cache(cache)
     unique: dict[str, dict] = {}
     for track in tracks:
-        if track.get("track_id") and track["track_id"] not in unique:
+        # Songs whose Exportify CSV already has audio features don't need ReccoBeats.
+        if track.get("track_id") and track["track_id"] not in unique and not track.get("csv_features"):
             unique[track["track_id"]] = track
     todo = [tid for tid in unique
             if tid not in cache["results"] and (retry_not_found or tid not in cache["not_found"])]
@@ -228,6 +229,14 @@ def to_features(raw: dict) -> dict:
         "fetched_at": raw.get("fetched_at"),
     }
     features.update({field: _percent(raw.get(field)) for field in _PERCENT_FIELDS})
+    return features
+
+
+def from_exportify(raw: dict) -> dict:
+    """Spotify audio features from an Exportify CSV (0-1 scores, tempo, key,
+    mode...) -> the same `features` shape ReccoBeats produces."""
+    features = to_features({**raw, "fetched_at": None})
+    features["source"] = "spotify"  # Spotify's own features, via the uploader's Exportify export
     return features
 
 

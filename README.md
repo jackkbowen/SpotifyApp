@@ -1,19 +1,42 @@
-# Spotify Liked Songs → DJ Setlist Builder
+# Shared Library → DJ Setlist Builder
 
-A personal, local-only toolkit with three steps:
+A playlist-building site around a **shared song library**. Anyone can add songs by uploading an [Exportify](https://exportify.net) CSV, and anyone can build playlists from everything in the library. There are no accounts: each saved playlist gets a private **edit link** and a public **share link**.
 
-1. **Export** your Spotify Liked Songs: `export_liked_songs.py` (this section)
-2. **Enrich** them, all with one script, `enrich_library.py`:
+1. **Import** songs: upload an Exportify CSV on the **Import** page ([below](#importing-songs-exportify)). The songs are usable straight away with the tempo, key, energy, valence and genres in the CSV.
+2. **Enrich** them in the background, using the same pipeline as `enrich_library.py`:
    - BPM, key, danceability and acousticness from GetSongBPM ([details](#phase-2-enrich-with-bpm--key))
    - mood/genre tags from Last.fm ([details](#phase-3-mood--genre-tags))
-   - audio features (energy, valence, tempo, key…) from ReccoBeats, and genres from Deezer and MusicBrainz, merged into one genre profile per song ([details](#phase-4-audio-features-genres-and-the-taxonomy))
-3. **Build setlists** in a local browser app: `python -m setlist_app` ([below](#phase-2-the-setlist-builder-app)). You can also generate drafts from a mood and get next-track suggestions ([phase 3](#phase-3-generate-from-a-mood--suggest-next-track)).
+   - audio features from ReccoBeats (only for songs whose CSV had none), and genres from Deezer and MusicBrainz, merged into one genre profile per song ([details](#phase-4-audio-features-genres-and-the-taxonomy))
+3. **Build playlists** in the browser app: `python -m setlist_app` ([below](#phase-2-the-setlist-builder-app)). Generate drafts from a mood and get next-track suggestions ([phase 3](#phase-3-generate-from-a-mood--suggest-next-track)), then share them, copy the track links into Spotify, or download CSV/M3U.
 
-Everything runs on your machine. There's no hosting and no accounts beyond the API keys.
+It runs locally for now (bound to `127.0.0.1`); see [hosting notes](#hosting-it-publicly-later) before putting it online.
 
 ---
 
-# Phase 1: Export Liked Songs
+# Importing songs (Exportify)
+
+1. Go to [exportify.net](https://exportify.net), log in with Spotify, and click **Export** next to **Liked Songs** or any playlist. You get a `.csv` file.
+2. Start the app (`python -m setlist_app`), open **Import**, and drop the file on the page.
+
+The page reports how many songs were read, how many are **new** to the library, how many **updated** songs already there (an import only fills in missing details, it never erases any), and what was skipped: local files, rows without a valid Spotify track ID, and repeats within the file. Both the current Exportify layout and the older one (`Spotify ID`, `Artist Genres`…) are accepted. From the command line:
+
+```powershell
+python -m setlist_app.import_csv Liked_Songs.csv [more.csv ...]
+```
+
+**What's kept:** only song information: track ID, title, artists, album, release date, duration, explicit flag, ISRC, popularity, label, Spotify's genres and audio features. The **Added By** (the uploader's Spotify user ID) and **Added At** columns are never read, and imports don't record who uploaded them. The library's **Added** column is when a song first joined the shared library.
+
+**Limits** (per client address, in memory): 10 imports an hour, files up to 15 MB and 20,000 rows. Playlist saves and deletes are limited to 120 per 10 minutes.
+
+**After an import**, the library is rebuilt from the caches within a second or two, so new songs appear straight away. A background thread then runs the enrichment pipeline for them (`--no-enrich` turns it off). Big imports can take a while because MusicBrainz allows one request per second. **Import** shows progress, and the builder's banner counts songs still waiting. Don't run `enrich_library.py` by hand while the app is enriching, because both write the same cache files.
+
+The library lives in `data/app.db` (SQLite). Before every enrichment run it's written out as `data/library_source.json`, which is the pipeline's input.
+
+---
+
+# Phase 1: Export Liked Songs (optional, the old way)
+
+> The app no longer reads this export: songs come from Exportify CSVs instead (see above). The script still works if you want a raw JSON/CSV dump of your own library.
 
 Exports your full Spotify **Liked Songs** library to:
 
@@ -130,7 +153,7 @@ Spotify's audio-features endpoints only work for apps with extended quota, not D
 
 # Phase 2: Enrich with BPM & key
 
-`enrich_library.py` reads `output/liked_songs.json` and looks up each unique recording on the [GetSongBPM API](https://getsongbpm.com/api). It writes `data/library_enriched.json`, which is what the app reads. That file is the slim track data (no `spotify_raw`, about a third of the size) plus BPM, key (standard and Camelot), Open Key, danceability, acousticness and time signature where found.
+`enrich_library.py` reads the shared library (`data/library_source.json`, written by the app; `output/liked_songs.json` if that doesn't exist) and looks up each unique recording on the [GetSongBPM API](https://getsongbpm.com/api). It writes `data/library_enriched.json`, which is what the app reads. That file is the slim track data (no `spotify_raw`, about a third of the size) plus BPM, key (standard and Camelot), Open Key, danceability, acousticness and time signature where found.
 
 ## Get a GetSongBPM API key
 
@@ -140,7 +163,7 @@ Spotify's audio-features endpoints only work for apps with extended quota, not D
    - CSV exports include a `bpm_key_source` column
    - M3U exports include a header comment
 
-   Keep those in place if you modify or share anything. The registration form may ask where the link will appear. This app is local-only with no public site, so describe it truthfully; whether that's acceptable is GetSongBPM's call.
+   Keep those in place if you modify or share anything. The registration form may ask where the link will appear. Describe where the site actually runs; whether that's acceptable is GetSongBPM's call. The share page credits GetSongBPM too.
 3. Add the key to `.env`:
 
    ```ini
@@ -163,9 +186,10 @@ Progress looks like `Enriched 400 / 1386 unique tracks... (this run: ...)`. The 
 | `--limit N` | Look up at most N uncached tracks per step this run |
 | `--retry-unmatched` | Try tracks that had no match last time again (the sources' catalogues grow) |
 | `--no-fetch` | Don't call any API. Just rebuild `library_enriched.json` from the caches. Works without keys, so you can use the app before you have them. |
-| `--input PATH` | Read a different Liked Songs export |
+| `--input PATH` | Read a different library file (same format as `library_source.json` / `liked_songs.json`) |
+| `--skip-build` | Fetch only; don't rebuild `library_enriched.json` (the app's background worker uses this) |
 
-**After you like more songs:** run `export_liked_songs.py`, then `enrich_library.py`. Cached tracks are never fetched again, so only new ones cost requests.
+**You normally don't run this by hand:** the app runs it in the background after each import. Run it yourself (with the app stopped) for `--retry-unmatched`, `--limit` tests, or `--no-fetch` after editing taxonomy overrides. Cached tracks are never fetched again, so only new ones cost requests.
 
 ### How matching works (and its limits)
 
@@ -188,11 +212,12 @@ Tracks without a confident match go to `data/unmatched.json` and show as "—" i
 ```powershell
 python -m setlist_app               # opens http://127.0.0.1:8765 in your browser
 python -m setlist_app --port 9000 --no-browser
+python -m setlist_app --no-enrich   # never call the enrichment APIs; imports still show up straight away
 ```
 
-The app is a small Flask server bound to `127.0.0.1`, so it's never reachable from other machines, with a plain HTML/JS page and no build step. Stop it with Ctrl+C.
+The app is a small Flask server bound to `127.0.0.1`, so it's never reachable from other machines, with plain HTML/JS pages and no build step. Stop it with Ctrl+C. At startup it creates `data/app.db` if needed, rebuilds the library if an import happened since the last build, and starts the background enrichment.
 
-If `data/library_enriched.json` doesn't exist yet, the page tells you to run the enrichment script. If `output/liked_songs.json` is newer than the export the enriched library was built from, or some tracks haven't been looked up yet, a warning banner says so.
+There are four pages: the **Setlist builder** (`/`), **Subgenre** (`/subgenre`), **Import** (`/import`) and each playlist's read-only **share page** (`/p/<id>`). If the library is empty, the builder links to Import. While some songs are still waiting for enrichment, a banner says how many.
 
 ## Browsing
 
@@ -213,15 +238,23 @@ If `data/library_enriched.json` doesn't exist yet, the page tells you to run the
 - **Energy arc:** one bar per track, showing ReccoBeats' energy score (0–100) or BPM. Grey stubs are tracks without data.
 - The summary shows track count, total length, BPM range and how many transitions are key-compatible.
 
-## Saving and exporting
+## Saving, sharing and exporting
 
-- Name the set and click **Save** (or press Enter in the name field). Load saved sets from the dropdown. **New** starts a blank one, and **Delete** removes the loaded one after confirming.
+- Name the playlist and click **Save** (or press Enter in the name field). **New** starts a blank one, and **Delete** removes the loaded one after confirming.
+- Saving creates the playlist with a random **edit key**. Your browser remembers the key, so **My playlists** lists everything you've saved from this browser. The server stores only a hash of the key.
+- Under the buttons:
+  - **Share: view link** is the read-only page `/p/<id>`. Anyone with it can see the tracks, copy the track links, download CSV/M3U, or **Open a copy in the builder** to make their own version.
+  - **Edit link (keep private)** is `/?playlist=<id>&key=<key>`. Opening it in another browser or device lets that browser edit the playlist too. Anyone who has it can change or delete the playlist, and there is no way to recover a lost key.
+- Opening someone else's playlist without its key starts an unsaved **copy**; saving that creates a new playlist.
 - Unsaved work is kept in the browser if you close the tab or restart the app, and you're warned before discarding it.
-- **Export CSV / Export M3U** saves the set first if needed, then downloads it:
-  - **CSV:** position, track, artists, BPM, key, Camelot, danceability, acousticness, duration, ISRC, Spotify URL.
+- **Copy track links** copies one `open.spotify.com/track/…` link per line. In the Spotify desktop app, open a playlist and paste (Ctrl/Cmd+V) to add every track, in order.
+- **Export CSV / Export M3U** saves the playlist first if needed, then downloads it:
+  - **CSV:** position, track, artists, BPM, key, Camelot, danceability, acousticness, duration, ISRC, Spotify URL. Cells that start with `=`, `+`, `-` or `@` get a leading `'`, so a song title can't run as a spreadsheet formula.
   - **M3U:** extended M3U with a BPM/key comment per track. The entries are Spotify URLs, not audio files, so Rekordbox/Serato will list the tracks but can't play them until you point them at local files.
-- Exports use GetSongBPM's BPM/key only, like the library table's BPM and Key columns. The ReccoBeats fallback is used inside the set builder, suggestions and generation.
-- If a track in a saved set is later removed from your Liked Songs, the set keeps it, with the BPM/key it had when you saved it. Its energy isn't kept, so it shows as a grey stub in the energy arc.
+- Exports use GetSongBPM's BPM/key only, like the library table's BPM and Key columns. The fallback to the songs' audio features is used inside the set builder, suggestions, generation and the share page.
+- If a track in a saved playlist is ever missing from the library, the playlist keeps it, with the details it had when saved.
+
+**Playlists from before the shared library:** on first start, the app moves `data/setlists.json` into the database and writes each one's edit link to `data/migrated_playlist_links.txt`. Open those links once in your browser to get them back under **My playlists**.
 
 ---
 
@@ -231,8 +264,9 @@ If `data/library_enriched.json` doesn't exist yet, the page tells you to run the
 | --- | --- | --- |
 | `.env` | Spotify, GetSongBPM and Last.fm credentials | you |
 | `.spotify_token_cache` | Cached Spotify login (read-only) | `export_liked_songs.py` |
-| `.spotify_playlist_token_cache` | Cached Spotify login for creating playlists | the app |
-| `output/liked_songs.json`, `.csv` | Raw Liked Songs export | `export_liked_songs.py` |
+| `output/liked_songs.json`, `.csv` | Raw Liked Songs export (optional, phase 1) | `export_liked_songs.py` |
+| `data/app.db` | The shared library (one row per song), import log and playlists (SQLite) | the app |
+| `data/library_source.json` | The library written out as the enrichment pipeline's input | the app |
 | `data/bpm_cache.json` | Every successful lookup, keyed by ISRC, plus recent request times for the hourly limit | `enrich_library.py` |
 | `data/unmatched.json` | ISRCs with no match, with track name/artists for reference | `enrich_library.py` |
 | `data/lastfm_tag_cache.json` | Raw Last.fm tags per artist+title and per artist, including "not found" results | `enrich_library.py` |
@@ -240,9 +274,10 @@ If `data/library_enriched.json` doesn't exist yet, the page tells you to run the
 | `data/genre_cache.json` | Raw Deezer and MusicBrainz genres per ISRC, plus MusicBrainz's official genre list | `enrich_library.py` |
 | `data/taxonomy_overrides.json` | Words you force to "style" or "vibe" (hand-edited, see phase 4) | you |
 | `data/library_enriched.json` | Slim library + BPM/key + tags + audio features + genres + one merged profile per song, and the library-wide taxonomy; what the app reads | `enrich_library.py` |
-| `data/setlists.json` | Your saved setlists, with any mood tags | the app |
+| `data/setlists.json` | Old saved setlists; moved into `app.db` on first start and kept as a backup | the old app |
+| `data/migrated_playlist_links.txt` | Edit links for those migrated setlists (keep private) | the app |
 
-All of these are git-ignored. Back up `data/setlists.json` if your sets matter to you. Deleting any `*_cache.json` file means every track is looked up again by that step.
+All of these are git-ignored. Back up `data/app.db` (the songs and playlists) if they matter to you. Deleting any `*_cache.json` file means every track is looked up again by that step.
 
 Out of scope for now: variety rules (e.g. avoiding repeated artists), ML/embedding similarity, Rekordbox/Serato integration beyond CSV/M3U, and Spotify playback control.
 
@@ -285,7 +320,7 @@ Each track in `library_enriched.json` gets `tags: [{tag, weight, source}]` (stro
 
 There's **no fixed list of genres or moods** anywhere. The vocabulary is whatever tags exist in your library, with how many tracks carry each.
 
-**Why not Spotify's artist genres?** The plan was to also use `GET /artists/{id}` genres. On 2026-09-30 Spotify returned **no `genres` field at all** for this app, with both a user token and an app token, even for artists like Skrillex. That's true even though the February 2026 changelog doesn't list genres as removed. So that source isn't used. Last.fm's artist tags cover the same need. If Spotify restores the field, it could be added as another source in `tag_enrichment.py`.
+**Why not Spotify's artist genres?** The plan was to also use `GET /artists/{id}` genres. On 2026-09-30 Spotify returned **no `genres` field at all** for this app, with both a user token and an app token, even for artists like Skrillex. That's true even though the February 2026 changelog doesn't list genres as removed. So the API isn't used for genres. **Exportify CSVs do include Spotify's artist genres**, though, and imported songs get them as a `spotify` genre source (weight 60) alongside Deezer and MusicBrainz.
 
 ---
 
@@ -300,6 +335,8 @@ python enrich_library.py --only features
 ```
 
 [ReccoBeats](https://reccobeats.com) is a free API with Spotify-style audio features: tempo, key, energy, valence (sad → happy), danceability, acousticness, instrumentalness, speechiness, liveness and loudness. It's looked up by Spotify track ID, 40 songs per request, so the whole library takes a few minutes. It has about 70% of this library (983 of 1,396 songs). Results are cached in `data/features_cache.json` and stored per song as `features`, with scores on a 0–100 scale.
+
+Songs imported from an Exportify CSV with audio-feature columns use those instead (Spotify's own features, source `spotify`), and ReccoBeats isn't asked about them.
 
 ReccoBeats is unofficial and its terms aren't published, so check them before sharing anything that uses its data. The app's footer credits it.
 
@@ -400,16 +437,13 @@ If a mood is active (from a generated draft, or **Set mood…**), suggestions on
 
 ---
 
-# Export a setlist to Spotify
+# Hosting it publicly later
 
-Click **Export to Spotify** in the setlist panel. It saves the set first if needed, then creates a **private** playlist in your Spotify account with the same name and track order.
+It's built to be safe to expose, but it's only been run locally so far. Before putting it on a domain:
 
-- **First time:** a browser tab opens asking you to let the app **"create and edit your private playlists"** (`playlist-modify-private`). This is a separate login from the read-only one the export script uses, so neither disturbs the other. It's cached in `.spotify_playlist_token_cache`. The login is caught on the same `http://127.0.0.1:8888/callback` redirect URI you registered in phase 1, so the dashboard needs no changes. The page waits up to 3 minutes for you to finish.
-- **Afterwards** the button becomes **Update on Spotify**. It updates the same playlist in place, replacing its tracks, name and description with the current set. The panel links to the playlist and shows "changed since" when the set has been edited after the last export. Use **export as new playlist** to make a separate copy, e.g. if you deleted the original in Spotify.
-- **Description:** the playlist description lists the set's mood tags and credits getsongbpm.com and last.fm. GetSongBPM requires a backlink wherever its data is shared, and a playlist counts.
-- **Large sets** are handled: tracks are sent in batches of 100, Spotify's per-request limit.
-- **Tracks you've since unliked** are still exported. They're still Spotify tracks, just no longer in your library.
-
-To revoke access, delete `.spotify_playlist_token_cache`, or remove the app under *Manage apps* in your Spotify account settings.
-
-If Spotify answers **403**, the usual Development Mode causes apply: your account must be listed under **User Management** in the Developer Dashboard, and the app owner needs Premium.
+- **Run it behind a real server**, not Flask's development server: for example `waitress-serve --threads 8 --listen 127.0.0.1:8765 setlist_app.server:app` behind Caddy, nginx or a Cloudflare Tunnel for HTTPS. Start the background enrichment yourself in that case (`python -m setlist_app` does it for you; with waitress, call `worker.start()` from a small launcher).
+- **Client addresses:** the rate limits use the connecting address. Behind a proxy every request comes from the proxy, so the limits would apply to everyone at once. Configure `ProxyFix` (or read the proxy's header) only for the proxy you actually use; otherwise anyone can fake the header.
+- **One process only:** rate limits and the enrichment worker live in memory, and SQLite is fine at this size. Several worker processes would each run their own enrichment.
+- **Big libraries:** the builder downloads the whole library at once, which is fine for thousands of songs. Tens of thousands would need server-side search and paging.
+- **API terms:** GetSongBPM requires its backlink (kept in the footers), and ReccoBeats', Last.fm's and MusicBrainz's terms apply to a public site too. Check them before launching.
+- Nothing on the site can touch your Spotify account. The old **Export to Spotify** feature was removed, because a public site can't sign in to your account for strangers.
